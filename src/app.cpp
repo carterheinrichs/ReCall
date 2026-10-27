@@ -243,8 +243,10 @@ LRESULT CALLBACK App::keyboard_proc(int code,WPARAM wp,LPARAM lp) {
             if(down&&mods==self->config_.modifiers) {
                 if(!self->hook_down_) {
                     self->hook_down_=true;
-                    // Mark the Win key as used so releasing it does not open Start.
-                    if(mods&MOD_WIN) { INPUT mask[2]{}; for(auto& i:mask) { i.type=INPUT_KEYBOARD; i.ki.wVk=VK_F24; }
+                    // Mark Win as used without emitting a bindable function-key shortcut.
+                    // 0xE8 is unassigned; F24 can trigger another app's global hotkey.
+                    constexpr WORD menu_mask_key=0xE8;
+                    if(mods&MOD_WIN) { INPUT mask[2]{}; for(auto& i:mask) { i.type=INPUT_KEYBOARD; i.ki.wVk=menu_mask_key; }
                         mask[1].ki.dwFlags=KEYEVENTF_KEYUP; SendInput(2,mask,sizeof(INPUT)); }
                     PostMessageW(self->hwnd_,WM_HOTKEY,hotkey_id,0);
                 }
