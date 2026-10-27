@@ -28,6 +28,7 @@ class App {
     UINT taskbar_created_{};
     int dpi_=96, selected_=0, first_=0;
     std::vector<Item> apps_,emoji_;
+    std::map<std::wstring,std::shared_ptr<Gdiplus::Bitmap>> thumbnail_cache_;
     Snapshot shown_;
     std::mutex queue_mutex_, result_mutex_;
     std::condition_variable queue_cv_;

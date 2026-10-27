@@ -14,6 +14,7 @@ $stage = Join-Path $root 'out/msix'
 New-Item -ItemType Directory -Force "$stage/Assets" | Out-Null
 Copy-Item -LiteralPath $Executable -Destination "$stage/ReCall.exe"
 Copy-Item -LiteralPath "$root/packaging/AppxManifest.xml" -Destination "$stage/AppxManifest.xml"
+Copy-Item -LiteralPath "$root/THIRD_PARTY_NOTICES.md" -Destination "$stage/THIRD_PARTY_NOTICES.md"
 # Generate deterministic development artwork without adding a graphics dependency to the app.
 Add-Type -AssemblyName System.Drawing
 foreach ($asset in @(@('StoreLogo',50), @('Square44x44Logo',44), @('Square150x150Logo',150))) {

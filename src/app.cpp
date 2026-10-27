@@ -69,14 +69,18 @@ void App::query() {
         } else result.items=ranked(std::move(candidates),q.text);
         for(auto& i:result.items) if(i.kind==Kind::Image) {
             if(generation!=generation_) return;
+            if(auto cached=thumbnail_cache_.find(i.value);cached!=thumbnail_cache_.end()) {
+                result.images.emplace(i.value,cached->second); continue;
+            }
             Gdiplus::Bitmap source(i.value.c_str()); UINT w=source.GetWidth(),h=source.GetHeight();
             if(source.GetLastStatus()!=Gdiplus::Ok||!w||!h) continue;
-            double scale=std::min(1.0,600.0/std::max(w,h));
+            double scale=std::min(1.0,400.0/std::max(w,h));
             auto bitmap=std::make_shared<Gdiplus::Bitmap>(std::max(1,static_cast<int>(w*scale)),std::max(1,static_cast<int>(h*scale)),PixelFormat32bppPARGB);
             Gdiplus::Graphics g(bitmap.get()); g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
             g.DrawImage(&source,0,0,static_cast<INT>(bitmap->GetWidth()),static_cast<INT>(bitmap->GetHeight()));
             result.images.emplace(i.value,std::move(bitmap));
         }
+        thumbnail_cache_=result.images;
         result.status=(q.route==Route::Apps?L"Applications":q.route==Route::Clipboard?L"Clipboard history":L"Unicode 16 emoji");
         result.status+=L"  ·  "+std::to_wstring(result.items.size())+L" results";
         if(generation!=generation_) return;
@@ -103,7 +107,7 @@ void App::fonts() {
 void App::position() {
     POINT point{}; GetCursorPos(&point); MONITORINFO monitor{sizeof(monitor)};
     HMONITOR handle=MonitorFromPoint(point,MONITOR_DEFAULTTONEAREST); GetMonitorInfoW(handle,&monitor);
-    const int w=std::min(px(900),monitor.rcWork.right-monitor.rcWork.left),h=std::min(px(540),monitor.rcWork.bottom-monitor.rcWork.top);
+    const int w=std::min(px(900),static_cast<int>(monitor.rcWork.right-monitor.rcWork.left)),h=std::min(px(540),static_cast<int>(monitor.rcWork.bottom-monitor.rcWork.top));
     SetWindowPos(hwnd_,HWND_TOPMOST,monitor.rcWork.left+(monitor.rcWork.right-monitor.rcWork.left-w)/2,
         monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-h)/3,w,h,SWP_NOACTIVATE);
     MoveWindow(edit_,px(24),px(21),w-px(48),px(32),TRUE);
@@ -135,7 +139,7 @@ void App::menu() {
 void App::select(int delta) {
     if(shown_.items.empty()) return;
     selected_=std::clamp(selected_+delta,0,static_cast<int>(shown_.items.size())-1);
-    RECT r{}; GetClientRect(hwnd_,&r); int rows=std::max(1,(r.bottom-px(110))/px(58));
+    RECT r{}; GetClientRect(hwnd_,&r); int rows=std::max(1,static_cast<int>((r.bottom-px(110))/px(58)));
     if(selected_<first_) first_=selected_; if(selected_>=first_+rows) first_=selected_-rows+1;
     InvalidateRect(hwnd_,nullptr,FALSE);
 }
@@ -178,7 +182,8 @@ void App::paint() {
     auto old=SelectObject(buffer,surface); fill(buffer,bounds,background);
     int split=bounds.right*3/5; fill(buffer,{px(16),px(70),bounds.right-px(16),px(71)},RGB(60,63,73));
     fill(buffer,{split,px(84),split+1,bounds.bottom-px(48)},RGB(60,63,73));
-    int rows=std::max(1,(bounds.bottom-px(110))/px(58));
+    int rows=std::max(1,static_cast<int>((bounds.bottom-px(110))/px(58)));
+    {
     Gdiplus::Graphics graphics(buffer);
     auto image=[&](const Item& item,RECT target) {
         auto it=shown_.images.find(item.value); if(it==shown_.images.end()) return;
@@ -203,6 +208,7 @@ void App::paint() {
         if(item.kind==Kind::Image) image(item,preview);
         else text(buffer,(item.kind==Kind::Emoji?item.value+L"\n\n"+item.detail:item.kind==Kind::Text?item.value:item.title+L"\n\n"+item.detail).substr(0,12000),preview,foreground,
             item.kind==Kind::Emoji?emoji_font_:font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_WORD_ELLIPSIS);
+    }
     }
     text(buffer,shown_.status,{px(24),bounds.bottom-px(40),split,bounds.bottom-px(15)},muted,small_font_);
     text(buffer,L"↑ ↓ navigate   Enter select   Esc close",{split+px(16),bounds.bottom-px(40),bounds.right-px(16),bounds.bottom-px(15)},muted,small_font_);
@@ -262,7 +268,7 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
     case changed_message: if(IsWindowVisible(hwnd_)) query(); return 0;
     case results_message: {
         std::lock_guard lock(result_mutex_);
-        if(pending_.generation==generation_) { shown_=std::move(pending_); selected_=first_=0; InvalidateRect(hwnd_,nullptr,FALSE); }
+        if(pending_.generation==generation_) { shown_=std::move(pending_); pending_.generation=0; selected_=first_=0; InvalidateRect(hwnd_,nullptr,FALSE); }
         return 0;
     }
     case error_message: {
@@ -277,7 +283,7 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
     case WM_ACTIVATE: if(LOWORD(wp)==WA_INACTIVE) ShowWindow(hwnd_,SW_HIDE); return 0;
     case WM_TIMER: if(wp==paste_timer) paste(); return 0;
     case WM_DPICHANGED: dpi_=HIWORD(wp); fonts(); position(); return 0;
-    case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wp),foreground); SetBkColor(reinterpret_cast<HDC>(wp),background); return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
+    case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wp),foreground); SetBkColor(reinterpret_cast<HDC>(wp),background); SetDCBrushColor(reinterpret_cast<HDC>(wp),background); return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: paint(); return 0;
     case WM_MOUSEWHEEL: select(GET_WHEEL_DELTA_WPARAM(wp)>0?-1:1); return 0;
