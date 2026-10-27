@@ -1,6 +1,7 @@
 #pragma once
 #include "config.h"
 #include "store.h"
+#include "theme.h"
 #include <gdiplus.h>
 #include <atomic>
 #include <condition_variable>
@@ -20,6 +21,7 @@ class App {
         std::wstring status;
     };
     Config config_;
+    ThemeColors colors_;
     std::unique_ptr<Store> store_;
     HWND hwnd_{}, edit_{}, last_active_{}, paste_target_{};
     HFONT font_{}, small_font_{}, emoji_font_{};
@@ -49,6 +51,7 @@ class App {
     void paste();
     void position();
     void fonts();
+    void apply_theme();
     void tray(bool add);
     void menu();
     void report(std::wstring message);

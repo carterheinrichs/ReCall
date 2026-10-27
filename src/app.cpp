@@ -3,6 +3,7 @@
 #include "clipboard.h"
 #include "search.h"
 #include "editing.h"
+#include "version.h"
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -13,7 +14,6 @@ namespace recall {
 namespace {
 constexpr UINT results_message=WM_APP+1, tray_message=WM_APP+2, changed_message=WM_APP+3, error_message=WM_APP+4;
 constexpr UINT hotkey_id=1, paste_timer=2;
-constexpr COLORREF background=RGB(27,29,35), foreground=RGB(238,239,245), muted=RGB(156,163,179), accent=RGB(54,65,91);
 void fill(HDC dc,RECT r,COLORREF color) { HBRUSH b=CreateSolidBrush(color); FillRect(dc,&r,b); DeleteObject(b); }
 void text(HDC dc,const std::wstring& s,RECT r,COLORREF color,HFONT font,UINT flags=DT_LEFT|DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS) {
     auto old=SelectObject(dc,font); SetBkMode(dc,TRANSPARENT); SetTextColor(dc,color);
@@ -113,17 +113,26 @@ void App::position() {
         monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-h)/3,w,h,SWP_NOACTIVATE);
     MoveWindow(edit_,px(24),px(21),w-px(48),px(32),TRUE);
 }
+void App::apply_theme() {
+    colors_=system_theme();
+    BOOL dark=colors_.dark;
+    DwmSetWindowAttribute(hwnd_,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
+    const int backdrop=DWMSBT_NONE;
+    DwmSetWindowAttribute(hwnd_,DWMWA_SYSTEMBACKDROP_TYPE,&backdrop,sizeof(backdrop));
+    RedrawWindow(hwnd_,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
+}
 void App::toggle() {
     if(IsWindowVisible(hwnd_)) { ShowWindow(hwnd_,SW_HIDE); return; }
     last_active_=GetForegroundWindow(); paste_target_=nullptr; KillTimer(hwnd_,paste_timer);
-    position(); ShowWindow(hwnd_,SW_SHOW); SetForegroundWindow(hwnd_); SetFocus(edit_);
+    apply_theme(); position(); ShowWindow(hwnd_,SW_SHOW); SetForegroundWindow(hwnd_); SetFocus(edit_);
     SendMessageW(edit_,EM_SETSEL,0,-1); query();
 }
 void App::tray(bool add) {
     NOTIFYICONDATAW data{sizeof(data)}; data.hWnd=hwnd_; data.uID=1;
     data.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP; data.uCallbackMessage=tray_message;
     data.hIcon=reinterpret_cast<HICON>(GetClassLongPtrW(hwnd_,GCLP_HICONSM));
-    wcscpy_s(data.szTip,L"ReCall — quick launcher");
+    const std::wstring tip=L"ReCall "+std::wstring(RECALL_VERSION_W)+L" — quick launcher";
+    wcsncpy_s(data.szTip,tip.c_str(),_TRUNCATE);
     Shell_NotifyIconW(add?NIM_ADD:NIM_DELETE,&data);
     if(add) { data.uVersion=NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION,&data); }
 }
@@ -179,11 +188,12 @@ void App::paste() {
     paste_target_=nullptr;
 }
 void App::paint() {
+    const auto background=colors_.background,foreground=colors_.foreground,muted=colors_.muted;
     PAINTSTRUCT ps{}; HDC dc=BeginPaint(hwnd_,&ps); RECT bounds{}; GetClientRect(hwnd_,&bounds);
     HDC buffer=CreateCompatibleDC(dc); HBITMAP surface=CreateCompatibleBitmap(dc,std::max(1L,bounds.right),std::max(1L,bounds.bottom));
     auto old=SelectObject(buffer,surface); fill(buffer,bounds,background);
-    int split=bounds.right*3/5; fill(buffer,{px(16),px(70),bounds.right-px(16),px(71)},RGB(60,63,73));
-    fill(buffer,{split,px(84),split+1,bounds.bottom-px(48)},RGB(60,63,73));
+    int split=bounds.right*3/5; fill(buffer,{px(16),px(70),bounds.right-px(16),px(71)},colors_.border);
+    fill(buffer,{split,px(84),split+1,bounds.bottom-px(48)},colors_.border);
     int rows=std::max(1,static_cast<int>((bounds.bottom-px(110))/px(58)));
     {
     Gdiplus::Graphics graphics(buffer);
@@ -197,12 +207,15 @@ void App::paint() {
     for(int row=0;row<rows;++row) {
         int idx=first_+row; if(idx>=static_cast<int>(shown_.items.size())) break;
         const auto& item=shown_.items[idx]; int y=px(82)+row*px(58);
-        if(idx==selected_) fill(buffer,{px(12),y,split-px(12),y+px(55)},accent);
+        const bool selected=idx==selected_;
+        const auto row_text=selected?colors_.selection_text:foreground;
+        const auto row_detail=selected?colors_.selection_text:muted;
+        if(selected) fill(buffer,{px(12),y,split-px(12),y+px(55)},colors_.selection);
         int left=px(28);
         if(item.kind==Kind::Image) { image(item,{left,y+px(5),left+px(42),y+px(47)}); left+=px(54); }
-        if(item.kind==Kind::Emoji) { text(buffer,item.value,{left,y,left+px(48),y+px(50)},foreground,emoji_font_); left+=px(54); }
-        text(buffer,single_line(item.title).substr(0,512),{left,y+px(5),split-px(25),y+px(30)},foreground,font_);
-        text(buffer,single_line(item.detail).substr(0,512),{left,y+px(30),split-px(25),y+px(50)},muted,small_font_);
+        if(item.kind==Kind::Emoji) { text(buffer,item.value,{left,y,left+px(48),y+px(50)},row_text,emoji_font_); left+=px(54); }
+        text(buffer,single_line(item.title).substr(0,512),{left,y+px(5),split-px(25),y+px(30)},row_text,font_);
+        text(buffer,single_line(item.detail).substr(0,512),{left,y+px(30),split-px(25),y+px(50)},row_detail,small_font_);
     }
     if(shown_.items.empty()) text(buffer,L"No results",{px(28),px(110),split,px(150)},muted,font_);
     if(!shown_.items.empty()&&selected_<static_cast<int>(shown_.items.size())) {
@@ -303,7 +316,8 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
     case WM_ACTIVATE: if(LOWORD(wp)==WA_INACTIVE) ShowWindow(hwnd_,SW_HIDE); return 0;
     case WM_TIMER: if(wp==paste_timer) paste(); return 0;
     case WM_DPICHANGED: dpi_=HIWORD(wp); fonts(); position(); return 0;
-    case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wp),foreground); SetBkColor(reinterpret_cast<HDC>(wp),background); SetDCBrushColor(reinterpret_cast<HDC>(wp),background); return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
+    case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_SYSCOLORCHANGE: apply_theme(); return 0;
+    case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wp),colors_.foreground); SetBkColor(reinterpret_cast<HDC>(wp),colors_.background); SetDCBrushColor(reinterpret_cast<HDC>(wp),colors_.background); return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: paint(); return 0;
     case WM_MOUSEWHEEL: select(GET_WHEEL_DELTA_WPARAM(wp)>0?-1:1); return 0;
@@ -330,16 +344,14 @@ int App::run(HINSTANCE instance) {
         0,0,900,540,nullptr,nullptr,instance,this);
     if(!hwnd_) throw std::runtime_error("Cannot create palette");
     dpi_=static_cast<int>(GetDpiForWindow(hwnd_));
-    const int round=2,mica=2; BOOL dark=TRUE;
+    const int round=DWMWCP_ROUND;
     DwmSetWindowAttribute(hwnd_,DWMWA_WINDOW_CORNER_PREFERENCE,&round,sizeof(round));
-    DwmSetWindowAttribute(hwnd_,DWMWA_SYSTEMBACKDROP_TYPE,&mica,sizeof(mica));
-    DwmSetWindowAttribute(hwnd_,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
     edit_=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,24,21,852,32,hwnd_,nullptr,instance,nullptr);
     if(!edit_) throw std::runtime_error("Cannot create query control");
     SendMessageW(edit_,EM_SETLIMITTEXT,256,0);
     std::wstring cue=L"Search apps  ·  "+config_.clipboard_prefix+L" clipboard  ·  "+config_.emoji_prefix+L" emoji";
     SendMessageW(edit_,EM_SETCUEBANNER,TRUE,reinterpret_cast<LPARAM>(cue.c_str()));
-    SetWindowSubclass(edit_,edit_proc,1,reinterpret_cast<DWORD_PTR>(this)); fonts(); position();
+    SetWindowSubclass(edit_,edit_proc,1,reinterpret_cast<DWORD_PTR>(this)); fonts(); apply_theme(); position();
     taskbar_created_=RegisterWindowMessageW(L"TaskbarCreated"); tray(true);
     registered_=RegisterHotKey(hwnd_,hotkey_id,config_.modifiers|MOD_NOREPEAT,config_.key)!=FALSE;
     if(!registered_&&config_.hook_fallback) hook_=SetWindowsHookExW(WH_KEYBOARD_LL,keyboard_proc,instance,0);

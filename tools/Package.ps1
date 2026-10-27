@@ -8,10 +8,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot/..").Path
 . "$PSScriptRoot/Signing.ps1"
+. "$PSScriptRoot/Version.ps1"
 if (($CertificateThumbprint -or $CertificateFile) -and !$Sign) { throw 'Use -Sign when specifying a signing certificate.' }
 if ($CertificateThumbprint -and $CertificateFile) { throw 'Specify either -CertificateFile or -CertificateThumbprint, not both.' }
 if (!(Test-Path -LiteralPath $Executable)) { throw "Build ReCall first: $Executable" }
 [xml]$manifest = [IO.File]::ReadAllText((Join-Path $root 'packaging/AppxManifest.xml'))
+$binary = (Get-Item -LiteralPath $Executable).VersionInfo
+$packageVersion = $binary.FileVersion
+if (!$packageVersion) { throw 'ReCall.exe has no version resource. Reconfigure and rebuild before packaging.' }
+$null = Get-ReCallVersionParts -Version $packageVersion -IncludeRevision
+$manifest.Package.Identity.Version = $packageVersion
+"Packaging ReCall $packageVersion"
 $publisher = [string]$manifest.Package.Identity.Publisher
 $exportedCertificate = Join-Path $root 'out/ReCall.Development.cer'
 $cert = $null
@@ -39,7 +46,7 @@ if (!$sdk) { throw 'Windows SDK packaging tools not found' }
 $stage = Join-Path $root 'out/msix'
 New-Item -ItemType Directory -Force "$stage/Assets" | Out-Null
 Copy-Item -LiteralPath $Executable -Destination "$stage/ReCall.exe"
-Copy-Item -LiteralPath "$root/packaging/AppxManifest.xml" -Destination "$stage/AppxManifest.xml"
+$manifest.Save((Join-Path $stage 'AppxManifest.xml'))
 Copy-Item -LiteralPath "$root/THIRD_PARTY_NOTICES.md" -Destination "$stage/THIRD_PARTY_NOTICES.md"
 # Generate deterministic development artwork without adding a graphics dependency to the app.
 Add-Type -AssemblyName System.Drawing

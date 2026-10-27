@@ -1,0 +1,2 @@
+#pragma once
+#define RECALL_VERSION_W L"@RECALL_VERSION@"
