@@ -314,7 +314,12 @@ void App::paint() {
         int left=px(28);
         if(item.kind==Kind::App) { image(item,{left,y+px(11),left+px(32),y+px(43)}); left+=px(44); }
         if(item.kind==Kind::Image) { image(item,{left,y+px(5),left+px(42),y+px(47)}); left+=px(54); }
-        if(item.kind==Kind::Emoji) { text(buffer,item.value,{left,y,left+px(48),y+px(50)},row_text,emoji_font_); left+=px(54); }
+        if(item.kind==Kind::Emoji) {
+            RECT glyph{left,y,left+px(48),y+px(50)};
+            if(!emoji_renderer_.draw(buffer,item.value,glyph,static_cast<float>(px(28)),row_text))
+                text(buffer,item.value,glyph,row_text,emoji_font_);
+            left+=px(54);
+        }
         text(buffer,single_line(item.title.substr(0,512)),{left,y+px(5),split-px(25),y+px(30)},row_text,font_);
         text(buffer,single_line(item.detail).substr(0,512),{left,y+px(30),split-px(25),y+px(50)},row_detail,small_font_);
     }
@@ -322,8 +327,15 @@ void App::paint() {
     if(!shown_.rows().empty()&&selected_<static_cast<int>(shown_.rows().size())) {
         const auto& item=shown_.rows()[selected_]; RECT preview{split+px(24),px(100),bounds.right-px(24),bounds.bottom-px(85)};
         if(item.kind==Kind::Image) image(item,preview);
-        else text(buffer,(item.kind==Kind::Emoji?item.value+L"\n\n"+item.detail:item.kind==Kind::Text?item.value.substr(0,12000):item.title+L"\n\n"+item.detail).substr(0,12000),preview,foreground,
-            item.kind==Kind::Emoji?emoji_font_:font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_WORD_ELLIPSIS);
+        else if(item.kind==Kind::Emoji) {
+            RECT glyph{preview.left,preview.top,preview.right,preview.top+px(72)};
+            if(!emoji_renderer_.draw(buffer,item.value,glyph,static_cast<float>(px(48)),foreground))
+                text(buffer,item.value,glyph,foreground,emoji_font_);
+            preview.top+=px(88);
+            text(buffer,item.detail,preview,foreground,font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_WORD_ELLIPSIS);
+        }
+        else text(buffer,(item.kind==Kind::Text?item.value.substr(0,12000):item.title+L"\n\n"+item.detail).substr(0,12000),preview,foreground,
+            font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_WORD_ELLIPSIS);
     }
     }
     text(buffer,shown_.status,{px(24),bounds.bottom-px(40),split,bounds.bottom-px(15)},muted,small_font_);

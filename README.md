@@ -21,7 +21,7 @@ ReCall starts hidden with a notification-area icon. Press **Win+Space** or click
 | --- | --- |
 | `code` | Fuzzy-search applications |
 | `> meeting` | Filter clipboard history, newest first |
-| `:` or `:smile` | Browse/search emoji names and category tags |
+| `:` or `:smile` | Browse/search emoji names and category tags; `:fire` ranks 🔥 first |
 | Up / Down, Page Up / Page Down | Move selection |
 | Ctrl+Backspace | Delete the previous word or the selected text |
 | Enter | Launch or copy and paste the selection |

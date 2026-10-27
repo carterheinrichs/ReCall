@@ -60,6 +60,34 @@ Query route_query(std::wstring_view input,std::wstring_view clipboard,std::wstri
     while(!input.empty()&&iswspace(input.front())) input.remove_prefix(1);
     return {r,std::wstring(input)};
 }
+namespace {
+std::wstring emoji_words(std::wstring_view text) {
+    std::wstring out;
+    for(auto c:text) {
+        if(c==L'_'||c==L':'||iswspace(c)) {
+            if(!out.empty()&&out.back()!=L' ') out+=L' ';
+        } else out+=static_cast<wchar_t>(towlower(c));
+    }
+    if(!out.empty()&&out.back()==L' ') out.pop_back();
+    return out;
+}
+int emoji_score(std::wstring_view query,const Item& item,const Cancelled& cancelled) {
+    const auto words=emoji_words(query),name=emoji_words(item.title),tags=emoji_words(item.detail);
+    if(words.empty()) return 0;
+    if(words==name||query==item.value) return 1000000;
+    // Literal names outrank category tags; both outrank scattered fuzzy letters.
+    auto literal=[&](const std::wstring& text,int base) {
+        const auto pos=text.find(words);
+        if(pos==std::wstring::npos) return -1;
+        const bool boundary=(pos==0||!iswalnum(text[pos-1]))&&
+            (pos+words.size()==text.size()||!iswalnum(text[pos+words.size()]));
+        return base+(boundary?1000:0)-static_cast<int>(std::min(pos,size_t{500}));
+    };
+    int score=std::max(literal(name,20000),literal(tags,10000));
+    if(score>=0) return score;
+    return std::min(999,std::max(fuzzy_score(words,name,cancelled),fuzzy_score(words,tags,cancelled)));
+}
+}
 std::vector<Item> ranked(const std::vector<Item>& items,std::wstring_view query,size_t limit,const Cancelled& cancelled) {
     struct Hit { int score; size_t index; };
     std::vector<Hit> hits;
@@ -69,8 +97,7 @@ std::vector<Item> ranked(const std::vector<Item>& items,std::wstring_view query,
         if(cancelled&&cancelled()) return {};
         // Long clipboard entries remain searchable without quadratic work over megabytes of data.
         auto title=std::wstring_view(items[i].title).substr(0,8192);
-        int s=fuzzy_score(query,title,cancelled);
-        if(items[i].kind==Kind::Emoji) s=std::max(s,fuzzy_score(query,items[i].detail,cancelled));
+        int s=items[i].kind==Kind::Emoji?emoji_score(query,items[i],cancelled):fuzzy_score(query,title,cancelled);
         if(s>=0) hits.push_back({s,i});
     }
     const auto count=std::min(limit,hits.size());

@@ -45,6 +45,19 @@ int main() {
     hits=ranked({a,b},L"sa",1); check(hits.size()==1&&hits[0].id==2,"top-k preserves input order on score ties");
     check(ranked({a,b},L"sa",0).empty(),"zero ranking limit");
     check(ranked({a,b},L"sa",100,[]{return true;}).empty(),"ranking cancels superseded work");
+    Item fire,engine,fuzzy,heart;
+    for(auto* item:{&fire,&engine,&fuzzy,&heart}) item->kind=Kind::Emoji;
+    fire.title=L"fire"; fire.value=L"🔥"; fire.detail=L"fire Travel & Places sky & weather";
+    engine.title=L"fire_engine"; engine.detail=L"fire engine Travel & Places transport-ground";
+    fuzzy.title=L"first_reward"; fuzzy.detail=L"first reward";
+    heart.title=L"heart_on_fire"; heart.detail=L"heart on fire Smileys & Emotion";
+    auto emoji_hits=ranked({fuzzy,engine,heart,fire},L"fire");
+    check(emoji_hits.size()==4&&emoji_hits[0].value==L"🔥"&&emoji_hits.back().title==fuzzy.title,
+        "exact emoji name outranks literal related names and fuzzy matches");
+    check(ranked({engine,fire},L" FIRE ")[0].value==L"🔥","emoji names ignore case and surrounding whitespace");
+    check(ranked({engine,fire},L"fire engine")[0].title==engine.title,"spaces match shortcode underscores");
+    check(ranked({engine,fire},L"🔥")[0].value==L"🔥","emoji glyph is searchable");
+    check(ranked({fire},L"weather").size()==1,"emoji category tags remain searchable");
     int polls=0;
     check(fuzzy_score(std::wstring(64,L'a'),std::wstring(8192,L'a'),[&]{return ++polls>5;})==-1&&polls>5,"scoring cancels within a large candidate");
     // Exhaustive alignment is independent of the optimized dynamic-programming scorer.

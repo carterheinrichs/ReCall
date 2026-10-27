@@ -4,6 +4,7 @@
 #include "theme.h"
 #include "previews.h"
 #include "clipboard.h"
+#include "emoji_renderer.h"
 #include <gdiplus.h>
 #include <atomic>
 #include <condition_variable>
@@ -29,6 +30,7 @@ class App {
     std::unique_ptr<Store> store_;
     HWND hwnd_{}, edit_{}, last_active_{}, paste_target_{};
     HFONT font_{}, small_font_{}, emoji_font_{};
+    EmojiRenderer emoji_renderer_;
     HDC paint_dc_{};
     HBITMAP paint_surface_{};
     HGDIOBJ paint_original_{};

@@ -34,19 +34,25 @@ add_library(sqlite3 STATIC "${sqlite_SOURCE_DIR}/sqlite3.c")
 target_include_directories(sqlite3 PUBLIC "${sqlite_SOURCE_DIR}")
 target_compile_definitions(sqlite3 PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
 add_executable(ReCall WIN32 src/main.cpp src/config.cpp src/store.cpp src/clipboard.cpp
-  src/catalog.cpp src/search.cpp src/app.cpp src/theme.cpp src/appearance.cpp src/previews.cpp assets/resources.rc
+  src/catalog.cpp src/search.cpp src/app.cpp src/emoji_renderer.cpp src/theme.cpp src/appearance.cpp src/previews.cpp assets/resources.rc
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc")
 target_include_directories(ReCall PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(ReCall PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
   _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 target_link_libraries(ReCall PRIVATE sqlite3 comctl32 dwmapi gdiplus ole32 shell32 shlwapi
-  user32 gdi32 advapi32 windowsapp)
+  user32 gdi32 advapi32 windowsapp d2d1 dwrite)
 if(MSVC)
   target_compile_options(ReCall PRIVATE /W4 /permissive- /utf-8 /EHsc)
   target_link_options(ReCall PRIVATE /MANIFEST:EMBED /MANIFESTINPUT:${CMAKE_CURRENT_BINARY_DIR}/generated/app.manifest)
 endif()
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(emoji_tests tests/emoji_tests.cpp src/emoji_renderer.cpp)
+  target_include_directories(emoji_tests PRIVATE src)
+  target_compile_definitions(emoji_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(emoji_tests PRIVATE /utf-8 /EHsc)
+  target_link_libraries(emoji_tests PRIVATE d2d1 dwrite gdi32 ole32)
+  add_test(NAME emoji_tests COMMAND emoji_tests)
   add_executable(core_tests tests/core_tests.cpp src/search.cpp)
   target_include_directories(core_tests PRIVATE src)
   target_compile_definitions(core_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
