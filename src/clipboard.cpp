@@ -26,6 +26,7 @@ std::unique_ptr<Gdiplus::Bitmap> read_dib(HGLOBAL h) {
     if(!lock.data||size<sizeof(BITMAPINFOHEADER)) return {};
     const auto* hdr=static_cast<BITMAPINFOHEADER*>(lock.data);
     if(hdr->biSize<sizeof(BITMAPINFOHEADER)||hdr->biSize>size||hdr->biWidth<=0||hdr->biHeight==0||hdr->biHeight==LONG_MIN||hdr->biPlanes!=1) return {};
+    if(!clipboard_image_size_allowed(hdr->biWidth,std::abs(hdr->biHeight))) return {};
     if(hdr->biCompression!=BI_RGB&&hdr->biCompression!=BI_BITFIELDS) return {};
     if(hdr->biBitCount!=1&&hdr->biBitCount!=4&&hdr->biBitCount!=8&&hdr->biBitCount!=16&&hdr->biBitCount!=24&&hdr->biBitCount!=32) return {};
     size_t offset=hdr->biSize;
@@ -53,9 +54,13 @@ std::optional<Item> capture_clipboard(HWND owner,const fs::path& media,DWORD seq
         if(IsClipboardFormatAvailable(CF_DIBV5)) bitmap=read_dib(GetClipboardData(CF_DIBV5));
         if(!bitmap&&IsClipboardFormatAvailable(CF_DIB)) bitmap=read_dib(GetClipboardData(CF_DIB));
         if(!bitmap&&IsClipboardFormatAvailable(CF_BITMAP)) {
-            std::unique_ptr<Gdiplus::Bitmap> source(Gdiplus::Bitmap::FromHBITMAP(static_cast<HBITMAP>(GetClipboardData(CF_BITMAP)),nullptr));
-            if(source&&source->GetLastStatus()==Gdiplus::Ok&&static_cast<uint64_t>(source->GetWidth())*source->GetHeight()<=32*1024*1024)
-                bitmap.reset(source->Clone(0,0,source->GetWidth(),source->GetHeight(),PixelFormat32bppARGB));
+            auto handle=static_cast<HBITMAP>(GetClipboardData(CF_BITMAP)); BITMAP dimensions{};
+            if(GetObjectW(handle,sizeof(dimensions),&dimensions)&&dimensions.bmWidth>0&&dimensions.bmHeight>0&&
+                clipboard_image_size_allowed(dimensions.bmWidth,dimensions.bmHeight)) {
+                std::unique_ptr<Gdiplus::Bitmap> source(Gdiplus::Bitmap::FromHBITMAP(handle,nullptr));
+                if(source&&source->GetLastStatus()==Gdiplus::Ok)
+                    bitmap.reset(source->Clone(0,0,source->GetWidth(),source->GetHeight(),PixelFormat32bppARGB));
+            }
         }
         if(!bitmap&&IsClipboardFormatAvailable(CF_UNICODETEXT)) {
             HGLOBAL h=GetClipboardData(CF_UNICODETEXT); const size_t size=GlobalSize(h);
@@ -75,37 +80,51 @@ std::optional<Item> capture_clipboard(HWND owner,const fs::path& media,DWORD seq
     if(bitmap->Save(path.c_str(),&png,nullptr)!=Gdiplus::Ok) throw std::runtime_error("Cannot save clipboard PNG");
     Item item; item.kind=Kind::Image; item.value=path.wstring(); return item;
 }
-DWORD populate_clipboard(HWND owner,const Item& item) {
-    UINT format=CF_UNICODETEXT; HGLOBAL memory{};
+PreparedClipboard prepare_clipboard(const Item& item) {
+    PreparedClipboard prepared;
+    auto& memory=prepared.memory;
     if(item.kind==Kind::Image) {
         Gdiplus::Bitmap image(item.value.c_str());
         const UINT w=image.GetWidth(),h=image.GetHeight();
-        if(image.GetLastStatus()!=Gdiplus::Ok||!w||!h||static_cast<uint64_t>(w)*h>32*1024*1024) throw std::runtime_error("Cannot load clipboard image");
+        if(image.GetLastStatus()!=Gdiplus::Ok||!clipboard_image_size_allowed(w,h)) throw std::runtime_error("Cannot load clipboard image");
         const size_t bytes=static_cast<size_t>(w)*h*4;
         memory=GlobalAlloc(GMEM_MOVEABLE,sizeof(BITMAPINFOHEADER)+bytes);
         if(!memory) throw std::bad_alloc();
         GlobalLockGuard lock(memory);
-        if(!lock.data) { GlobalFree(memory); throw std::bad_alloc(); }
+        if(!lock.data) throw std::bad_alloc();
         BITMAPINFOHEADER header{}; header.biSize=sizeof(header); header.biWidth=static_cast<LONG>(w); header.biHeight=-static_cast<LONG>(h);
         header.biPlanes=1; header.biBitCount=32; header.biCompression=BI_RGB; header.biSizeImage=static_cast<DWORD>(bytes);
         std::memcpy(lock.data,&header,sizeof(header));
         Gdiplus::Rect rect(0,0,w,h); Gdiplus::BitmapData data{};
         if(image.LockBits(&rect,Gdiplus::ImageLockModeRead,PixelFormat32bppARGB,&data)!=Gdiplus::Ok) {
-            GlobalUnlock(memory); lock.data=nullptr; GlobalFree(memory); throw std::runtime_error("Cannot decode image");
+            throw std::runtime_error("Cannot decode image");
         }
         for(UINT y=0;y<h;++y) std::memcpy(static_cast<BYTE*>(lock.data)+sizeof(header)+static_cast<size_t>(y)*w*4,
             static_cast<BYTE*>(data.Scan0)+static_cast<ptrdiff_t>(y)*data.Stride,static_cast<size_t>(w)*4);
-        image.UnlockBits(&data); format=CF_DIB;
+        image.UnlockBits(&data); prepared.format=CF_DIB;
     } else {
         memory=GlobalAlloc(GMEM_MOVEABLE,(item.value.size()+1)*sizeof(wchar_t));
         if(!memory) throw std::bad_alloc();
         GlobalLockGuard lock(memory);
-        if(!lock.data) { GlobalFree(memory); throw std::bad_alloc(); }
+        if(!lock.data) throw std::bad_alloc();
         std::memcpy(lock.data,item.value.c_str(),(item.value.size()+1)*sizeof(wchar_t));
     }
-    ClipboardLock clipboard(owner);
-    if(!clipboard.open) { GlobalFree(memory); throw std::runtime_error("Clipboard is busy"); }
-    if(!EmptyClipboard()||!SetClipboardData(format,memory)) { GlobalFree(memory); throw std::runtime_error("Cannot populate clipboard"); }
+    return prepared;
+}
+std::optional<DWORD> publish_clipboard(HWND owner,PreparedClipboard& prepared) {
+    if(!prepared.memory) throw std::runtime_error("Clipboard payload is empty");
+    if(!OpenClipboard(owner)) return {};
+    struct Close { ~Close() { CloseClipboard(); } } close;
+    if(!EmptyClipboard()||!SetClipboardData(prepared.format,prepared.memory)) throw std::runtime_error("Cannot populate clipboard");
+    prepared.memory=nullptr;
     return GetClipboardSequenceNumber();
+}
+DWORD populate_clipboard(HWND owner,const Item& item) {
+    auto prepared=prepare_clipboard(item);
+    for(int i=0;i<8;++i) {
+        if(auto sequence=publish_clipboard(owner,prepared)) return *sequence;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    throw std::runtime_error("Clipboard is busy");
 }
 }

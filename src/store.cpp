@@ -34,9 +34,27 @@ Store::Store(const fs::path& state,unsigned limit):media_(state/L"clips_media"),
         exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"
              "CREATE TABLE IF NOT EXISTS clipboard_items (id INTEGER PRIMARY KEY AUTOINCREMENT,"
              "type TEXT NOT NULL CHECK(type IN ('text','image')), content TEXT, char_count INTEGER DEFAULT 0,"
-             "created_at DATETIME DEFAULT CURRENT_TIMESTAMP);"
-             "CREATE INDEX IF NOT EXISTS idx_clipboard_created ON clipboard_items(created_at DESC);"
+             "created_at DATETIME DEFAULT CURRENT_TIMESTAMP,preview TEXT);"
+             "DROP INDEX IF EXISTS idx_clipboard_created;"
              "CREATE INDEX IF NOT EXISTS idx_clipboard_recent ON clipboard_items(created_at DESC,id DESC);");
+        bool migrate=false;
+        {
+            Statement schema(db_,"SELECT count(*) FROM pragma_table_info('clipboard_items') WHERE name='preview'");
+            if(sqlite3_step(schema.p)!=SQLITE_ROW) throw std::runtime_error(sqlite3_errmsg(db_));
+            migrate=sqlite3_column_int(schema.p,0)==0;
+        }
+        if(migrate) {
+            // Atomic, one-time upgrade: browsing never needs to read multi-megabyte payloads.
+            exec("BEGIN IMMEDIATE");
+            try {
+                exec("ALTER TABLE clipboard_items ADD COLUMN preview TEXT;"
+                     "UPDATE clipboard_items SET preview=substr(content,1,12000) WHERE type='text';"
+                     "COMMIT");
+            } catch(...) { sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr); throw; }
+        }
+        Statement count(db_,"SELECT count(*) FROM clipboard_items");
+        if(sqlite3_step(count.p)!=SQLITE_ROW) throw std::runtime_error(sqlite3_errmsg(db_));
+        count_=static_cast<size_t>(sqlite3_column_int64(count.p,0));
         // Reclaim PNGs left behind by a crash between disk capture and DB insertion/retention.
         std::set<fs::path> live;
         Statement q(db_,"SELECT content FROM clipboard_items WHERE type='image'");
@@ -52,17 +70,28 @@ void Store::insert(const Item& item) {
     std::vector<fs::path> expired;
     exec("BEGIN IMMEDIATE");
     try {
-        Statement s(db_,"INSERT INTO clipboard_items(type,content,char_count) VALUES(?,?,?)");
+        Statement s(db_,"INSERT INTO clipboard_items(type,content,char_count,preview) VALUES(?,?,?,?)");
         s.text(1,item.kind==Kind::Image?"image":"text"); s.text(2,utf8(item.value));
+        auto preview=std::wstring_view(item.value).substr(0,12000);
+        if(!preview.empty()&&preview.back()>=0xD800&&preview.back()<=0xDBFF) preview.remove_suffix(1);
+        if(item.kind==Kind::Text) s.text(4,utf8(preview));
         sqlite3_int64 count=0;
         if(item.kind==Kind::Text) for(wchar_t ch:item.value) if(ch<0xDC00||ch>0xDFFF) ++count;
         sqlite3_bind_int64(s.p,3,count); s.done();
-        Statement old(db_,"SELECT content FROM clipboard_items WHERE type='image' AND id NOT IN (SELECT id FROM clipboard_items ORDER BY id DESC LIMIT ?)");
-        sqlite3_bind_int(old.p,1,static_cast<int>(limit_));
-        int rc; while((rc=sqlite3_step(old.p))==SQLITE_ROW) expired.emplace_back(wide(column(old.p,0)));
-        if(rc!=SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
-        Statement trim(db_,"DELETE FROM clipboard_items WHERE id NOT IN (SELECT id FROM clipboard_items ORDER BY id DESC LIMIT ?)");
-        sqlite3_bind_int(trim.p,1,static_cast<int>(limit_)); trim.done(); exec("COMMIT");
+        if(count_+1>limit_) {
+            // Usually one expired row: seek from the oldest end, independent of history size.
+            Statement cutoff(db_,"SELECT id FROM clipboard_items ORDER BY id LIMIT 1 OFFSET ?");
+            sqlite3_bind_int64(cutoff.p,1,static_cast<sqlite3_int64>(count_-limit_));
+            if(sqlite3_step(cutoff.p)!=SQLITE_ROW) throw std::runtime_error("Cannot find retention cutoff");
+            const auto id=sqlite3_column_int64(cutoff.p,0);
+            Statement old(db_,"SELECT content FROM clipboard_items WHERE id<=? AND type='image'");
+            sqlite3_bind_int64(old.p,1,id);
+            int rc; while((rc=sqlite3_step(old.p))==SQLITE_ROW) expired.emplace_back(wide(column(old.p,0)));
+            if(rc!=SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
+            Statement trim(db_,"DELETE FROM clipboard_items WHERE id<=?");
+            sqlite3_bind_int64(trim.p,1,id); trim.done();
+        }
+        exec("COMMIT"); count_=std::min(count_+1,static_cast<size_t>(limit_));
     } catch(...) { sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr); throw; }
     for(auto& p:expired) if(p.parent_path()==media_) { std::error_code ec; fs::remove(p,ec); }
 }
@@ -70,20 +99,25 @@ std::vector<Item> Store::recent(size_t limit) {
     return search({},limit);
 }
 std::vector<Item> Store::search(std::wstring_view query,size_t limit,const std::function<bool()>& cancelled) {
-    Statement q(db_,query.empty()?
-        "SELECT id,type,content,char_count,created_at FROM clipboard_items ORDER BY created_at DESC,id DESC LIMIT ?":
-        "SELECT id,type,content,char_count,created_at,substr(content,1,8192) FROM clipboard_items ORDER BY created_at DESC,id DESC LIMIT ?");
+    // Never select full text payloads while browsing or filtering.
+    Statement q(db_,"SELECT id,type,CASE WHEN type='image' THEN content ELSE coalesce(preview,substr(content,1,12000)) END,"
+        "char_count,created_at FROM clipboard_items ORDER BY created_at DESC,id DESC LIMIT ?");
     sqlite3_bind_int64(q.p,1,query.empty()&&limit?static_cast<sqlite3_int64>(limit):-1);
     std::vector<Item> out;
     int rc;
     while((rc=sqlite3_step(q.p))==SQLITE_ROW) {
         if(cancelled&&cancelled()) return {};
         Item i; i.id=sqlite3_column_int64(q.p,0); i.kind=column(q.p,1)=="image"?Kind::Image:Kind::Text;
-        if(!query.empty()) {
-            const auto candidate=i.kind==Kind::Image?L"Image":wide(column(q.p,5));
-            if(fuzzy_score(query,std::wstring_view(candidate).substr(0,8192))<0) continue;
+        i.value=wide(column(q.p,2));
+        if(i.kind==Kind::Text&&i.value.size()>12000) {
+            i.value.resize(12000);
+            if(i.value.back()>=0xD800&&i.value.back()<=0xDBFF) i.value.pop_back();
         }
-        i.value=wide(column(q.p,2)); i.title=i.kind==Kind::Image?L"Image":i.value.substr(0,8192);
+        if(!query.empty()) {
+            const auto candidate=i.kind==Kind::Image?std::wstring_view(L"Image"):std::wstring_view(i.value).substr(0,8192);
+            if(!fuzzy_matches(query,candidate,cancelled)) continue;
+        }
+        i.title=i.kind==Kind::Image?L"Image":i.value.substr(0,8192);
         i.detail=wide(column(q.p,4));
         if(i.kind==Kind::Text) i.detail+=L"  ·  "+std::to_wstring(sqlite3_column_int64(q.p,3))+L" characters";
         out.push_back(std::move(i));
@@ -91,5 +125,14 @@ std::vector<Item> Store::search(std::wstring_view query,size_t limit,const std::
     }
     if(rc!=SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
     return out;
+}
+std::optional<Item> Store::load(long long id) {
+    Statement q(db_,"SELECT type,content FROM clipboard_items WHERE id=?");
+    sqlite3_bind_int64(q.p,1,id);
+    const auto rc=sqlite3_step(q.p);
+    if(rc==SQLITE_DONE) return {};
+    if(rc!=SQLITE_ROW) throw std::runtime_error(sqlite3_errmsg(db_));
+    Item item; item.id=id; item.kind=column(q.p,0)=="image"?Kind::Image:Kind::Text;
+    item.value=wide(column(q.p,1)); return item;
 }
 }

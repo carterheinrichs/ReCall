@@ -17,7 +17,7 @@ std::wstring reg_string(HKEY key,const wchar_t* name) {
     while(!s.empty()&&s.back()==0) s.pop_back(); return s;
 }
 }
-std::vector<Item> index_apps() {
+std::vector<Item> index_apps(const std::function<bool()>& cancelled) {
     std::vector<Item> out; std::set<std::wstring> seen;
     auto add=[&](Item i) {
         auto key=lower(i.title)+L"\n"+lower(i.value);
@@ -25,19 +25,20 @@ std::vector<Item> index_apps() {
     };
     const KNOWNFOLDERID folders[]={FOLDERID_Desktop,FOLDERID_PublicDesktop,FOLDERID_Programs,FOLDERID_CommonPrograms};
     for(const auto& folder:folders) {
+        if(cancelled&&cancelled()) return {};
         auto root=known_folder(folder); if(root.empty()) continue;
         std::error_code ec;
         fs::recursive_directory_iterator it(root,fs::directory_options::skip_permission_denied,ec),end;
         while(it!=end) {
+            if(cancelled&&cancelled()) return {};
             const auto path=it->path(); auto ext=lower(path.extension().wstring());
             if(ext==L".lnk") {
                 ComPtr<IShellLinkW> link;
                 if(SUCCEEDED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(link.put())))) {
                     ComPtr<IPersistFile> file;
                     if(SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(file.put())))&&SUCCEEDED(file->Load(path.c_str(),STGM_READ))) {
-                        wchar_t target[32768]{},args[32768]{},cwd[32768]{}; WIN32_FIND_DATAW data{};
+                        wchar_t target[32768]{}; WIN32_FIND_DATAW data{};
                         link->GetPath(target,32768,&data,SLGP_RAWPATH);
-                        link->GetArguments(args,32768); link->GetWorkingDirectory(cwd,32768);
                         // Launch the original shell link to preserve advertised and packaged-app targets.
                         Item i; i.title=path.stem().wstring(); i.value=path.wstring();
                         i.detail=*target?target:L"Windows application"; add(std::move(i));
@@ -53,6 +54,7 @@ std::vector<Item> index_apps() {
         RegKey root;
         if(RegOpenKeyExW(hive,L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths",0,KEY_READ|view,&root.h)!=ERROR_SUCCESS) continue;
         for(DWORD idx=0;;++idx) {
+            if(cancelled&&cancelled()) return {};
             wchar_t name[256]{}; DWORD n=256; auto rc=RegEnumKeyExW(root.h,idx,name,&n,nullptr,nullptr,nullptr,nullptr);
             if(rc==ERROR_NO_MORE_ITEMS) break; if(rc!=ERROR_SUCCESS) continue;
             RegKey sub; if(RegOpenKeyExW(root.h,name,0,KEY_READ|view,&sub.h)!=ERROR_SUCCESS) continue;

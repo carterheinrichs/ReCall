@@ -2,6 +2,9 @@
 #include "json.h"
 #include "editing.h"
 #include <iostream>
+#include <random>
+#include <cwctype>
+#include <limits>
 
 using namespace recall;
 int main() {
@@ -39,5 +42,36 @@ int main() {
     }
     Item a,b; a.title=L"same"; b.title=L"same"; a.id=2; b.id=1;
     auto hits=ranked({a,b},L"sa"); check(hits.size()==2&&hits[0].id==2,"stable ranking");
+    hits=ranked({a,b},L"sa",1); check(hits.size()==1&&hits[0].id==2,"top-k preserves input order on score ties");
+    check(ranked({a,b},L"sa",0).empty(),"zero ranking limit");
+    check(ranked({a,b},L"sa",100,[]{return true;}).empty(),"ranking cancels superseded work");
+    int polls=0;
+    check(fuzzy_score(std::wstring(64,L'a'),std::wstring(8192,L'a'),[&]{return ++polls>5;})==-1&&polls>5,"scoring cancels within a large candidate");
+    // Exhaustive alignment is independent of the optimized dynamic-programming scorer.
+    auto exhaustive=[](std::wstring_view query,std::wstring_view candidate) {
+        if(query.empty()) return 0;
+        int best=std::numeric_limits<int>::min();
+        std::function<void(size_t,size_t,int,int)> visit=[&](size_t q,size_t start,int previous,int score) {
+            if(q==query.size()) { best=std::max(best,score); return; }
+            for(size_t i=start;i<candidate.size();++i) if(towlower(query[q])==towlower(candidate[i])) {
+                bool boundary=i==0||!iswalnum(candidate[i-1])||(iswlower(candidate[i-1])&&iswupper(candidate[i]));
+                int bonus=10+(boundary?18:0)+(query[q]==candidate[i]?1:0);
+                int next=q==0?bonus-static_cast<int>(std::min(i,size_t{20})):
+                    score+bonus+(static_cast<int>(i)==previous+1?14:previous-static_cast<int>(i));
+                visit(q+1,i+1,static_cast<int>(i),next);
+            }
+        };
+        visit(0,0,-1,0); return best==std::numeric_limits<int>::min()?-1:std::max(0,best);
+    };
+    std::mt19937 random(42); const std::wstring alphabet=L"aAbB_ 日本";
+    for(int trial=0;trial<1000;++trial) {
+        std::wstring candidate,query;
+        auto n=random()%10,m=random()%5;
+        for(unsigned i=0;i<n;++i) candidate+=alphabet[random()%alphabet.size()];
+        for(unsigned i=0;i<m;++i) query+=alphabet[random()%alphabet.size()];
+        const auto expected=exhaustive(query,candidate);
+        check(fuzzy_score(query,candidate)==expected,"optimized score agrees with exhaustive alignments");
+        check(fuzzy_matches(query,candidate)==(expected>=0),"linear filtering agrees with scored matching");
+    }
     std::cout << (failures?"Core checks failed":"Core checks passed") << '\n'; return failures?1:0;
 }

@@ -11,6 +11,28 @@ int main() {
     const auto state=fs::temp_directory_path()/(L"ReCall-test-"+std::wstring(name));
     fs::create_directories(state/L"clips_media");
     try {
+        {
+            const auto legacy=state/L"legacy"; fs::create_directories(legacy/L"clips_media");
+            sqlite3* db{}; sqlite3_open(utf8((legacy/L"recall.db").wstring()).c_str(),&db);
+            sqlite3_exec(db,"CREATE TABLE clipboard_items(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,content TEXT,char_count INTEGER DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",nullptr,nullptr,nullptr);
+            sqlite3_stmt* insert{}; sqlite3_prepare_v2(db,"INSERT INTO clipboard_items(type,content) VALUES('text',?)",-1,&insert,nullptr);
+            const auto text=std::wstring(11999,L'x')+L"😀"+std::wstring(20000,L'y'); const auto encoded=utf8(text);
+            sqlite3_bind_text(insert,1,encoded.c_str(),-1,SQLITE_TRANSIENT);
+            check(sqlite3_step(insert)==SQLITE_DONE,"legacy schema fixture inserted");
+            sqlite3_finalize(insert); sqlite3_close(db);
+            {
+                Store upgraded(legacy,1000); auto rows=upgraded.recent();
+                check(rows.size()==1&&rows[0].value.size()==11999,"old database migrates to bounded Unicode previews");
+                check(upgraded.load(rows[0].id)->value==text,"schema upgrade preserves full original payload");
+            }
+            Store reopened(legacy,1000);
+            check(reopened.recent().size()==1,"preview migration is idempotent");
+            // Older binaries can still insert into the upgraded schema without supplying preview.
+            sqlite3_open(utf8((legacy/L"recall.db").wstring()).c_str(),&db);
+            sqlite3_exec(db,"INSERT INTO clipboard_items(type,content) VALUES('text','older binary entry')",nullptr,nullptr,nullptr);
+            sqlite3_close(db);
+            check(reopened.recent(1).front().value==L"older binary entry","missing previews fall back safely after a downgrade");
+        }
         auto orphan=state/L"clips_media"/L"orphan.png";
         { std::ofstream f(orphan); f << "orphan"; }
         {
@@ -57,9 +79,32 @@ int main() {
             check(matches.size()==1&&matches.front().value==L"needle new","streaming search stops at result limit");
             text.value=L"payload "+std::wstring(20000,L'x'); searchable.insert(text);
             matches=searchable.search(L"payload");
-            check(matches.size()==1&&matches.front().value==text.value&&matches.front().title.size()==8192,"large text keeps full paste payload with bounded search title");
+            check(matches.size()==1&&matches.front().value.size()==12000&&matches.front().title.size()==8192,"search returns bounded display text");
+            auto loaded=searchable.load(matches.front().id);
+            check(loaded&&loaded->value==text.value,"lazy payload load preserves full text");
+            rows=searchable.recent(1);
+            check(rows.size()==1&&rows.front().value.size()==12000,"unfiltered history is bounded too");
+            check(!searchable.load(-1),"expired or missing payload is absent");
+            text.value=std::wstring(11999,L'x')+L"😀tail"; searchable.insert(text);
+            rows=searchable.recent(1);
+            check(rows.front().value.size()==11999,"preview truncation preserves surrogate pairs");
+            check(searchable.load(rows.front().id)->value==text.value,"surrogate boundary preserves full payload");
+            text.value=std::wstring(8192,L'x')+L"needle"; searchable.insert(text);
+            check(searchable.search(L"needle").size()==2,"filter respects the original search prefix limit");
             matches=searchable.search(L"needle",100,[]{return true;});
             check(matches.empty(),"superseded search can cancel while scanning");
+        }
+        {
+            Store reduced(state,1);
+            Item text; text.kind=Kind::Text; text.value=L"only retained entry"; reduced.insert(text);
+            auto rows=reduced.recent();
+            check(rows.size()==1&&reduced.load(rows.front().id)->value==text.value,"lowering retention removes all excess entries");
+            text.value=L"replacement"; reduced.insert(text);
+            check(!reduced.load(rows.front().id)&&reduced.recent().size()==1,"retention continues correctly after a bulk trim");
+            bool rejected=false; text.value=std::wstring(1,static_cast<wchar_t>(0xD800));
+            try { reduced.insert(text); } catch(const std::runtime_error&) { rejected=true; }
+            text.value=L"after failed insert"; reduced.insert(text);
+            check(rejected&&reduced.recent().size()==1&&reduced.recent().front().value==text.value,"rolled-back insert does not corrupt retention accounting");
         }
     } catch(const std::exception& e) { std::cerr << e.what() << '\n'; ++failures; }
     fs::remove_all(state);
