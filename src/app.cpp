@@ -4,6 +4,7 @@
 #include "search.h"
 #include "editing.h"
 #include "version.h"
+#include "appearance.h"
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -138,6 +139,8 @@ void App::apply_theme() {
     DwmSetWindowAttribute(hwnd_,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
     const int backdrop=DWMSBT_NONE;
     DwmSetWindowAttribute(hwnd_,DWMWA_SYSTEMBACKDROP_TYPE,&backdrop,sizeof(backdrop));
+    try { apply_appearance(hwnd_,config_.opacity,config_.blur,colors_.high_contrast); }
+    catch(const std::exception& e) { report(wide(e.what())); }
     RedrawWindow(hwnd_,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
 }
 void App::toggle() {

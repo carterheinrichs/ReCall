@@ -34,7 +34,7 @@ add_library(sqlite3 STATIC "${sqlite_SOURCE_DIR}/sqlite3.c")
 target_include_directories(sqlite3 PUBLIC "${sqlite_SOURCE_DIR}")
 target_compile_definitions(sqlite3 PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
 add_executable(ReCall WIN32 src/main.cpp src/config.cpp src/store.cpp src/clipboard.cpp
-  src/catalog.cpp src/search.cpp src/app.cpp src/theme.cpp src/previews.cpp assets/resources.rc
+  src/catalog.cpp src/search.cpp src/app.cpp src/theme.cpp src/appearance.cpp src/previews.cpp assets/resources.rc
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc")
 target_include_directories(ReCall PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(ReCall PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
@@ -64,6 +64,12 @@ if(BUILD_TESTING)
   target_compile_options(preview_tests PRIVATE /utf-8 /EHsc)
   target_link_libraries(preview_tests PRIVATE gdiplus ole32 shell32)
   add_test(NAME preview_tests COMMAND preview_tests)
+  add_executable(appearance_tests tests/appearance_tests.cpp src/config.cpp src/appearance.cpp)
+  target_include_directories(appearance_tests PRIVATE src)
+  target_compile_definitions(appearance_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(appearance_tests PRIVATE /utf-8 /EHsc)
+  target_link_libraries(appearance_tests PRIVATE ole32 shell32 dwmapi advapi32)
+  add_test(NAME appearance_tests COMMAND appearance_tests)
 endif()
 install(TARGETS ReCall RUNTIME DESTINATION .)
 install(FILES THIRD_PARTY_NOTICES.md DESTINATION .)

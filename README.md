@@ -45,11 +45,16 @@ Created automatically on first launch:
   },
   "prefixes": { "clipboard": ">", "emoji": ":" },
   "auto_paste": true,
-  "history_limit": 1000
+  "history_limit": 1000,
+  "appearance": { "opacity": 80, "blur": true }
 }
 ```
 
 Restart ReCall after editing `config.json`. Modifiers are `win`, `ctrl`, `alt`, and `shift`; keys are `SPACE`, `A`–`Z`, `0`–`9`, or `F1`–`F24`. Prefixes can contain multiple characters but must be nonempty and cannot prefix one another. Invalid configuration produces a startup error rather than silently resetting settings.
+
+`appearance.opacity` is a whole-window opacity percentage from **1–100**, default **80** (80% opaque / 20% transparent, including text and previews). `appearance.blur` enables Windows' native blur-behind effect and defaults to **true**. Blur strength is controlled by Windows; it is a toggle, independent of the opacity percentage. Set opacity to `100` and blur to `false` for the solid palette. Existing configurations without an `appearance` section use the new defaults; add the section above to customize them.
+
+Blur follows Windows' **Transparency effects** setting and compositor support; if it is unavailable, the palette uses ordinary transparency. Windows contrast themes keep the window fully opaque with blur disabled. Appearance effects are applied only to ReCall's window; they do not capture the screen or write to the clipboard.
 
 Win+Space is also used by the Windows input-language switcher. ReCall first tries `RegisterHotKey` with repeat suppression. If registration fails and `hook_fallback` is enabled, a low-level keyboard hook consumes the exact configured combination. Choose, for example, Ctrl+Alt+Space if you want to retain the OS shortcut.
 
@@ -66,11 +71,12 @@ The listener captures changes while ReCall is running. Worker jobs coalesce supe
 | SQLite RAII, schema, retention, PNG cleanup | `src/store.cpp` |
 | Clipboard text/DIB/bitmap capture and PNG restoration | `src/clipboard.cpp` |
 | Asynchronous visible-row image previews and bounded thumbnail cache | `src/previews.cpp` |
+| Window opacity and native blur-behind | `src/appearance.cpp` |
 | Known-folder enumeration, shell-link inspection, 32/64-bit App Paths enumeration | `src/catalog.cpp` |
 | Prefix routing and proximity/word-boundary fuzzy scoring | `src/search.cpp` |
 | Embedded Unicode 16 emoji data | `assets/emoji.json` |
 
-The palette is created once, hidden, and reused. It is a borderless topmost tool window with per-monitor DPI handling, double-buffered native drawing, and Windows 11 rounded corners. It follows **Windows Settings → Personalization → Colors → Choose your mode** (the app mode if Windows is set to Custom). Background and text colors come from Windows UISettings, with standard Windows selection colors. There is no custom color theme or Mica backdrop. Changes apply while ReCall is running; Windows contrast themes use their system-provided colors.
+The palette is created once, hidden, and reused. It is a borderless topmost tool window with per-monitor DPI handling, double-buffered native drawing, and Windows 11 rounded corners. It follows **Windows Settings → Personalization → Colors → Choose your mode** (the app mode if Windows is set to Custom). Background and text colors come from Windows UISettings, with standard Windows selection colors. Configurable opacity and optional native blur are layered over those colors; there is no custom color theme or Mica backdrop. System theme changes apply while ReCall is running; Windows contrast themes use their system-provided colors.
 
 A background worker owns indexing, clipboard capture, database work, and fuzzy search. The newest 100 clipboard entries are preloaded at startup and refreshed after each capture, so opening clipboard history uses an in-memory list. Filtered clipboard queries stream through the database, stop at 100 matches, and cancel superseded searches. A separate preview worker loads only visible/selected image previews after the list appears, prioritizes the selected item, and keeps a 32-entry thumbnail cache across route changes. Stale search/preview generations are discarded. The foreground show path does not wait for indexing, SQLite, or PNG decoding. Applications are enumerated at startup and on tray-menu refresh; links are inspected using `IShellLinkW` and launched through their original `.lnk` so arguments, working directories, and packaged/advertised targets are preserved.
 
@@ -152,12 +158,12 @@ To enable the workflow, commit these changes and push them to GitHub. No extra b
 
 ## Versioning
 
-`VERSION` is the single source for **major.minor.patch** (currently `0.1.2`). To increment it:
+`VERSION` is the single source for **major.minor.patch**. To increment it (examples starting at `0.1.3`):
 
 ```powershell
-.\tools\Bump-Version.ps1             # patch: 0.1.2 -> 0.1.3
-.\tools\Bump-Version.ps1 -Part minor # minor: 0.1.2 -> 0.2.0
-.\tools\Bump-Version.ps1 -Part major # major: 0.1.2 -> 1.0.0
+.\tools\Bump-Version.ps1             # patch: 0.1.3 -> 0.1.4
+.\tools\Bump-Version.ps1 -Part minor # minor: 0.1.3 -> 0.2.0
+.\tools\Bump-Version.ps1 -Part major # major: 0.1.3 -> 1.0.0
 cmake --preset windows-x64
 cmake --build --preset release
 .\tools\Package.ps1 -Sign
@@ -193,6 +199,6 @@ ctest --preset release
 .\tools\Update-Emoji.ps1
 ```
 
-`core_tests` covers fuzzy alignment/ranking, prefix routing, JSON parsing, Unicode escapes, and word-deletion boundaries. `storage_tests` exercises real SQLite persistence, WAL, ordering, Unicode text, character counts, retention, image-file cleanup, limited/filtered history queries, cancellation, and full text preservation in an isolated temporary directory. `preview_tests` verifies background image decoding, sizing, cache reuse, missing-image handling, and preview priority using synthetic PNGs. `signing_tests.ps1` checks certificate discovery, CER-based identity reuse, and invalid-certificate rejection using temporary in-memory certificates without modifying the certificate store (PowerShell 7). The smoke script launches the actual GUI, verifies hidden startup, opens the palette, submits an emoji query, navigates, dismisses with Escape, and exits. It needs an interactive desktop and no already-running instance; it does not execute a result or alter the clipboard. Clipboard format round trips and auto-paste still require interactive validation.
+`core_tests` covers fuzzy alignment/ranking, prefix routing, JSON parsing, Unicode escapes, and word-deletion boundaries. `storage_tests` exercises real SQLite persistence, WAL, ordering, Unicode text, character counts, retention, image-file cleanup, limited/filtered history queries, cancellation, and full text preservation in an isolated temporary directory. `preview_tests` verifies background image decoding, sizing, cache reuse, missing-image handling, and preview priority using synthetic PNGs. `appearance_tests` covers configuration defaults/validation, native layered-window opacity, blur toggling, and contrast-mode behavior using a hidden test window. `signing_tests.ps1` checks certificate discovery, CER-based identity reuse, and invalid-certificate rejection using temporary in-memory certificates without modifying the certificate store (PowerShell 7). The smoke script launches the actual GUI, verifies hidden startup, opens the palette, submits an emoji query, navigates, dismisses with Escape, and exits. It needs an interactive desktop and no already-running instance; it does not execute a result or alter the clipboard. Clipboard format round trips and auto-paste still require interactive validation.
 
 The checked-in emoji JSON contains 3,781 fully-qualified Unicode 16 sequences. `Update-Emoji.ps1` regenerates it from Unicode's `emoji-test.txt`; shortcodes are normalized descriptive names and tags include names, groups, and subgroups. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

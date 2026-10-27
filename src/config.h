@@ -7,8 +7,11 @@ struct Config {
     bool hook_fallback = true;
     bool auto_paste = true;
     unsigned history_limit = 1000;
+    unsigned opacity = 80;
+    bool blur = true;
     std::wstring clipboard_prefix = L">", emoji_prefix = L":";
     fs::path state;
     static Config load();
+    static Config parse(std::string_view text);
 };
 }

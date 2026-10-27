@@ -32,7 +32,7 @@ jobs:
       - name: Build Release
         run: cmake --build --preset release --parallel
 
-      - name: Test C++ core, storage, and previews
+      - name: Test C++ core, storage, previews, and appearance
         run: ctest --preset release
 
       - name: Test signing certificate selection

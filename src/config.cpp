@@ -3,6 +3,7 @@
 #include <appmodel.h>
 #include <fstream>
 #include <iterator>
+#include <cmath>
 
 namespace recall {
 Config Config::load() {
@@ -19,12 +20,17 @@ Config Config::load() {
     if(!fs::exists(path)) {
         std::ofstream out(path,std::ios::binary);
         out << "{\n  \"hotkey\": { \"modifiers\": [\"win\"], \"key\": \"SPACE\", \"hook_fallback\": true },\n"
-               "  \"prefixes\": { \"clipboard\": \">\", \"emoji\": \":\" },\n  \"auto_paste\": true,\n  \"history_limit\": 1000\n}\n";
+               "  \"prefixes\": { \"clipboard\": \">\", \"emoji\": \":\" },\n  \"auto_paste\": true,\n  \"history_limit\": 1000,\n"
+               "  \"appearance\": { \"opacity\": 80, \"blur\": true }\n}\n";
         if(!out) throw std::runtime_error("Cannot create config.json");
     }
     std::ifstream in(path,std::ios::binary);
     if(!in) throw std::runtime_error("Cannot read config.json");
     std::string text((std::istreambuf_iterator<char>(in)),{});
+    auto settings=parse(text); settings.state=std::move(c.state); return settings;
+}
+Config Config::parse(std::string_view text) {
+    Config c;
     auto root=Json::parse(text);
     if(auto h=root.get("hotkey")) {
         if(auto m=h->get("modifiers")) { c.modifiers=0; for(auto& v:m->array()) {
@@ -52,6 +58,19 @@ Config Config::load() {
         double x=std::get<double>(v->value);
         if(x<1||x>100000||x!=static_cast<unsigned>(x)) throw std::runtime_error("history_limit must be an integer from 1 to 100000");
         c.history_limit=static_cast<unsigned>(x);
+    }
+    if(auto appearance=root.get("appearance")) {
+        if(auto v=appearance->get("opacity")) {
+            const auto* x=std::get_if<double>(&v->value);
+            if(!x||!std::isfinite(*x)||*x<1||*x>100||std::floor(*x)!=*x)
+                throw std::runtime_error("appearance.opacity must be an integer from 1 to 100 (percent)");
+            c.opacity=static_cast<unsigned>(*x);
+        }
+        if(auto v=appearance->get("blur")) {
+            const auto* enabled=std::get_if<bool>(&v->value);
+            if(!enabled) throw std::runtime_error("appearance.blur must be true or false");
+            c.blur=*enabled;
+        }
     }
     return c;
 }

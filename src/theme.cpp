@@ -20,6 +20,7 @@ ThemeColors system_theme() {
     colors.selection=GetSysColor(COLOR_HIGHLIGHT); colors.selection_text=GetSysColor(COLOR_HIGHLIGHTTEXT);
     HIGHCONTRASTW contrast{sizeof(contrast)};
     const bool high_contrast=SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(contrast),&contrast,0)&&(contrast.dwFlags&HCF_HIGHCONTRASTON);
+    colors.high_contrast=high_contrast;
     if(high_contrast) {
         colors.muted=colors.foreground; colors.border=colors.foreground;
     } else {
