@@ -123,9 +123,11 @@ The MSIX targets x64 Windows 11 22H2+ and declares `runFullTrust`. Development a
 
 The workflow in `.github/workflows/build.yml` runs on **Windows Server 2022 with Visual Studio 2022**, matching the `windows-x64` CMake preset. It runs on pushes and pull requests targeting `main`, and can also be started from **Actions → Windows build and MSIX → Run workflow**.
 
-Every successful build configures CMake, builds Release x64, runs the C++ and certificate-selection tests, validates/packages the MSIX with the Windows SDK, and uploads **`ReCall-windows-x64-unsigned`**. This artifact contains `ReCall.exe`, an unsigned `ReCall.msix`, the README, and third-party notices. GUI smoke tests are not run on hosted CI runners.
+Every successful build configures CMake, builds Release x64, runs the C++ and PowerShell tests, and packages the MSIX with the Windows SDK. GUI smoke tests are not run on hosted CI runners.
 
-Download artifacts from the workflow run's **Artifacts** section (GitHub provides them as ZIP files). They are retained for 14 days. The workflow does not publish GitHub Releases. If you already added GitHub's Ubuntu CMake starter workflow, replace it with this workflow; ReCall needs Windows tools.
+Successful pushes and manual runs on `main` publish a GitHub prerelease containing separately named signed and unsigned MSIX packages, `ReCall.Development.cer`, `ReCall.exe`, the README, and third-party notices. Release notes include the exact commit, author, commit message, and workflow link. Each run/attempt has its own `build-<run-id>-<attempt>` tag. Uploads are staged in a draft and published only after all files upload successfully.
+
+Main builds upload directly to Releases in the same job and create no Actions artifacts. Pull requests and manual runs on other branches upload `ReCall-windows-x64-unsigned` to the workflow run's Artifacts section for 3 days. Existing artifacts retain their original expiration. Release files remain until deleted. Private-repository runner minutes still count toward your Actions allowance.
 
 ### Enable signed MSIX artifacts
 
@@ -150,11 +152,9 @@ In your GitHub repository, open **Settings → Secrets and variables → Actions
 
 The PFX and its base64 representation contain your private signing key; keep them out of commits and public artifacts. Both file types are gitignored. A public `.cer` alone cannot sign on GitHub. Export requires an exportable private key; if Windows refuses the export, that key cannot be transferred using this workflow.
 
-On successful **`main` pushes or manual runs on `main`**, a separate job downloads the tested executable, imports the PFX on its ephemeral runner, repackages/signs using that exact certificate, and uploads **`ReCall-windows-x64-signed`**. This artifact includes the signed MSIX and matching public `.cer`; users who already trust the certificate do not need to import a new one for each build. The temporary PFX and newly imported certificate entries are removed afterward, and the hosted runner is discarded.
+On successful main-branch builds, the same job imports the PFX on its ephemeral runner and signs using that exact certificate. Users who already trust the certificate do not need to import it again. The temporary PFX and newly imported certificate entries are removed afterward.
 
-Without either secret, signing is skipped and the unsigned artifact is still available. If only one secret is configured, or the certificate is invalid, signing fails with an error. Pull requests never run the signing job. As with local packaging, the certificate subject must match the manifest publisher. Package versions are automatic as described below.
-
-To enable the workflow, commit these changes and push them to GitHub. No extra build secrets are needed for unsigned builds.
+Both signing secrets are required for main-branch releases. Missing secrets or an invalid certificate fail the job before release publication. Pull requests never receive signing credentials or publish releases. The certificate subject must match the manifest publisher.
 
 ## Versioning
 
@@ -175,7 +175,7 @@ MSIX and EXE versions use **major.minor.patch.revision**:
 
 - **Local builds:** revision `0`, e.g. `0.1.2.0`. Bump the base version when distributing a new local update.
 - **GitHub builds:** revision `${{ github.run_number }}`, e.g. `0.1.2.42`. Each new workflow run increments the revision automatically, including after a base-version bump. Re-running the same GitHub run retains its version.
-- **Packaging/signing:** `Package.ps1` reads the built EXE's version and stamps it into the staged MSIX manifest. The separate CI signing job preserves that version. It never increments the version during signing, and never packages a new manifest version around an older EXE.
+- **Packaging/signing:** `Package.ps1` reads the built EXE's version and stamps it into the staged MSIX manifest. The CI signing step preserves that version. It never increments the version during signing, and never packages a new manifest version around an older EXE.
 
 All four components must be between `0` and `65535`; overflow is reported rather than wrapping. GitHub run numbers belong to this workflow, so retaining the same workflow preserves their sequence. If you replace/reset the workflow or move between a CI build and a local build, bump the base version so the update is greater than the installed version. For Microsoft Store publication, the fourth component has separate Store rules; this workflow produces direct-install/sideload packages.
 

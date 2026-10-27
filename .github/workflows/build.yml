@@ -23,6 +23,8 @@ jobs:
     name: Build, test, and package (x64)
     runs-on: windows-2022
     timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -50,53 +52,66 @@ jobs:
           Copy-Item out/build/Release/ReCall.exe, out/ReCall.msix, README.md, THIRD_PARTY_NOTICES.md out/artifacts/
 
       - name: Upload executable and unsigned package
+        if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: ReCall-windows-x64-unsigned
           path: out/artifacts/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
-  sign:
-    name: Sign MSIX (when configured)
-    needs: build
-    # Pull requests never receive signing credentials, including same-repo PRs.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: windows-2022
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download tested executable
-        uses: actions/download-artifact@v4
-        with:
-          name: ReCall-windows-x64-unsigned
-          path: out/artifacts/
+      - name: Preserve unsigned release package
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          New-Item -ItemType Directory -Force out/release | Out-Null
+          Copy-Item out/ReCall.msix out/release/ReCall-windows-x64-unsigned.msix
+          Copy-Item out/build/Release/ReCall.exe, README.md, THIRD_PARTY_NOTICES.md out/release/
 
       - name: Package and sign using the existing certificate
-        id: signing
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           RECALL_SIGNING_PFX_BASE64: ${{ secrets.RECALL_SIGNING_PFX_BASE64 }}
           RECALL_SIGNING_PFX_PASSWORD: ${{ secrets.RECALL_SIGNING_PFX_PASSWORD }}
         run: |
-          if (!$env:RECALL_SIGNING_PFX_BASE64 -and !$env:RECALL_SIGNING_PFX_PASSWORD) {
-            Write-Host '::notice::Signing secrets are not configured. The unsigned artifact is available.'
-            return
-          }
-          ./tools/Package-CI.ps1 -Executable ./out/artifacts/ReCall.exe
-          'signed=true' >> $env:GITHUB_OUTPUT
+          ./tools/Package-CI.ps1 -Executable ./out/build/Release/ReCall.exe
+          Copy-Item out/ReCall.msix out/release/ReCall-windows-x64-signed.msix
+          Copy-Item out/ReCall.Development.cer out/release/
 
-      - name: Collect signed package
-        if: steps.signing.outputs.signed == 'true'
+      - name: Publish prerelease with commit details
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          New-Item -ItemType Directory -Force out/signed | Out-Null
-          Copy-Item out/ReCall.msix, out/ReCall.Development.cer, README.md, THIRD_PARTY_NOTICES.md out/signed/
-
-      - name: Upload signed package and public certificate
-        if: steps.signing.outputs.signed == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ReCall-windows-x64-signed
-          path: out/signed/
-          if-no-files-found: error
-          retention-days: 14
+          $tag = "build-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $version = (Get-Item out/build/Release/ReCall.exe).VersionInfo.FileVersion
+          $commit = git log -1 --format=fuller $env:GITHUB_SHA | Out-String
+          if ($LASTEXITCODE) { throw 'Could not read commit details.' }
+          $notes = @(
+            "Development build **$version** (Windows x64)."
+            ''
+            "Commit: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/commit/$env:GITHUB_SHA"
+            "Workflow: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            ''
+            '### Commit details'
+            '<pre>'
+            [System.Net.WebUtility]::HtmlEncode($commit.TrimEnd())
+            '</pre>'
+            ''
+            '### Downloads'
+            '- ReCall-windows-x64-signed.msix: signed installation package.'
+            '- ReCall-windows-x64-unsigned.msix: package for your own signing.'
+            '- ReCall.Development.cer: public certificate; import only if not already trusted.'
+            '- ReCall.exe: portable executable.'
+          ) -join "`n"
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          # Publish only after every asset is uploaded; failures leave a draft.
+          gh release create $tag --target $env:GITHUB_SHA --title "ReCall $version (development build)" --notes-file $notesPath --draft --prerelease
+          if ($LASTEXITCODE) { throw 'Could not create draft release.' }
+          $assets = @(Get-ChildItem out/release -File | ForEach-Object { $_.FullName })
+          gh release upload $tag @assets
+          if ($LASTEXITCODE) { throw 'Asset upload failed; release remains a draft.' }
+          gh release edit $tag --draft=false --prerelease --latest=false
+          if ($LASTEXITCODE) { throw 'Could not publish release.' }
+          "Release: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/tag/$tag" >> $env:GITHUB_STEP_SUMMARY
