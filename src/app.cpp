@@ -122,7 +122,8 @@ void App::toggle() {
 void App::tray(bool add) {
     NOTIFYICONDATAW data{sizeof(data)}; data.hWnd=hwnd_; data.uID=1;
     data.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP; data.uCallbackMessage=tray_message;
-    data.hIcon=LoadIconW(nullptr,IDI_APPLICATION); wcscpy_s(data.szTip,L"ReCall — quick launcher");
+    data.hIcon=reinterpret_cast<HICON>(GetClassLongPtrW(hwnd_,GCLP_HICONSM));
+    wcscpy_s(data.szTip,L"ReCall — quick launcher");
     Shell_NotifyIconW(add?NIM_ADD:NIM_DELETE,&data);
     if(add) { data.uVersion=NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION,&data); }
 }
@@ -320,6 +321,9 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
 int App::run(HINSTANCE instance) {
     INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_STANDARD_CLASSES}; InitCommonControlsEx(&controls);
     WNDCLASSEXW cls{sizeof(cls)}; cls.hInstance=instance; cls.lpfnWndProc=window_proc;
+    cls.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(102));
+    cls.hIconSm=static_cast<HICON>(LoadImageW(instance,MAKEINTRESOURCEW(102),IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),GetSystemMetrics(SM_CYSMICON),LR_SHARED));
     cls.lpszClassName=L"ReCall.Palette"; cls.hCursor=LoadCursorW(nullptr,IDC_ARROW); cls.style=CS_DBLCLKS;
     if(!RegisterClassExW(&cls)) throw std::runtime_error("Cannot register palette class");
     hwnd_=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST,cls.lpszClassName,L"ReCall",WS_POPUP|WS_CLIPCHILDREN,
