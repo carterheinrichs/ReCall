@@ -49,12 +49,23 @@ try {
     $phase = 'query'
     [void][ReCallSmoke]::SendMessage($edit,0x000C,[IntPtr]::Zero,':smile')
     Start-Sleep -Milliseconds 700
+    $phase = 'clipboard queries and route changes'
+    foreach ($query in @('>', '> smoke-test', ':smile', '>')) {
+        [void][ReCallSmoke]::SendMessage($edit,0x000C,[IntPtr]::Zero,$query)
+        Start-Sleep -Milliseconds 100
+    }
+    $phase = 'theme notifications'
+    [void][ReCallSmoke]::PostMessage($hwnd,0x001A,[IntPtr]::Zero,[IntPtr]::Zero)
+    [void][ReCallSmoke]::PostMessage($hwnd,0x031A,[IntPtr]::Zero,[IntPtr]::Zero)
+    [void][ReCallSmoke]::PostMessage($hwnd,0x0015,[IntPtr]::Zero,[IntPtr]::Zero)
+    Start-Sleep -Milliseconds 150
+    $phase = 'navigation and dismissal'
     [void][ReCallSmoke]::PostMessage($edit,0x0100,[IntPtr]0x28,[IntPtr]::Zero)
     [void][ReCallSmoke]::PostMessage($edit,0x0100,[IntPtr]0x1B,[IntPtr]::Zero)
     Start-Sleep -Milliseconds 150
     if ([ReCallSmoke]::IsWindowVisible($hwnd)) { throw 'Escape failed to hide the palette' }
     if ($process.HasExited) { throw 'Process exited while exercising the palette' }
-    'Native smoke test passed: hidden startup, show, query, navigation, Escape.'
+    'Native smoke test passed: hidden startup, show, clipboard/emoji queries, theme notifications, navigation, Escape.'
 } catch {
     Write-Warning "Smoke test failed during $phase : $_"
     Write-Warning ([ReCallSmoke]::Diagnostics($process.Id))

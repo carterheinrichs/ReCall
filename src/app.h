@@ -2,6 +2,7 @@
 #include "config.h"
 #include "store.h"
 #include "theme.h"
+#include "previews.h"
 #include <gdiplus.h>
 #include <atomic>
 #include <condition_variable>
@@ -10,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 
 namespace recall {
@@ -30,7 +32,11 @@ class App {
     UINT taskbar_created_{};
     int dpi_=96, selected_=0, first_=0;
     std::vector<Item> apps_,emoji_;
-    std::map<std::wstring,std::shared_ptr<Gdiplus::Bitmap>> thumbnail_cache_;
+    std::unique_ptr<PreviewLoader> previews_;
+    std::set<std::wstring> requested_previews_;
+    struct PreviewUpdate { uint64_t generation; std::wstring path; PreviewLoader::Bitmap bitmap; };
+    std::vector<PreviewUpdate> pending_previews_;
+    std::shared_ptr<const std::vector<Item>> clipboard_history_,pending_history_;
     Snapshot shown_;
     std::mutex queue_mutex_, result_mutex_;
     std::condition_variable queue_cv_;
@@ -41,9 +47,12 @@ class App {
     std::atomic<uint64_t> generation_{0};
     std::atomic<DWORD> clipboard_sequence_{0}, own_sequence_{0};
     std::wstring error_;
-    void enqueue(std::function<void()> job);
+    void enqueue(std::function<void()> job,bool priority=false);
     void run_worker();
     void query();
+    void show_results(Snapshot result);
+    void request_previews();
+    void refresh_history();
     void capture();
     void paint();
     void select(int delta);

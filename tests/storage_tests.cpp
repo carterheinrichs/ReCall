@@ -43,6 +43,24 @@ int main() {
         sqlite3_prepare_v2(db,"SELECT char_count FROM clipboard_items WHERE content != 'final'",-1,&statement,nullptr);
         check(sqlite3_step(statement)==SQLITE_ROW&&sqlite3_column_int(statement,0)==12,"character count uses code points");
         sqlite3_finalize(statement); sqlite3_close(db);
+        {
+            Store searchable(state,1000);
+            Item text; text.kind=Kind::Text;
+            text.value=L"needle old"; searchable.insert(text);
+            for(int i=0;i<120;++i) { text.value=L"filler "+std::to_wstring(i); searchable.insert(text); }
+            text.value=L"needle new"; searchable.insert(text);
+            auto rows=searchable.recent(10);
+            check(rows.size()==10&&rows.front().value==L"needle new","recent query limits results in recency order");
+            auto matches=searchable.search(L"needle");
+            check(matches.size()==2&&matches.front().value==L"needle new"&&matches.back().value==L"needle old","search includes matches older than cached first page");
+            matches=searchable.search(L"needle",1);
+            check(matches.size()==1&&matches.front().value==L"needle new","streaming search stops at result limit");
+            text.value=L"payload "+std::wstring(20000,L'x'); searchable.insert(text);
+            matches=searchable.search(L"payload");
+            check(matches.size()==1&&matches.front().value==text.value&&matches.front().title.size()==8192,"large text keeps full paste payload with bounded search title");
+            matches=searchable.search(L"needle",100,[]{return true;});
+            check(matches.empty(),"superseded search can cancel while scanning");
+        }
     } catch(const std::exception& e) { std::cerr << e.what() << '\n'; ++failures; }
     fs::remove_all(state);
     std::cout << (failures?"Storage checks failed":"Storage checks passed") << '\n';

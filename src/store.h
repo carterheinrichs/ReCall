@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include <functional>
 struct sqlite3;
 namespace recall {
 class Store {
@@ -13,6 +14,7 @@ public:
     Store(const Store&)=delete;
     Store& operator=(const Store&)=delete;
     void insert(const Item& item);
-    std::vector<Item> recent();
+    std::vector<Item> recent(size_t limit=0);
+    std::vector<Item> search(std::wstring_view query,size_t limit=100,const std::function<bool()>& cancelled={});
 };
 }

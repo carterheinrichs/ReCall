@@ -12,7 +12,8 @@
 
 namespace recall {
 namespace {
-constexpr UINT results_message=WM_APP+1, tray_message=WM_APP+2, changed_message=WM_APP+3, error_message=WM_APP+4;
+constexpr UINT results_message=WM_APP+1, tray_message=WM_APP+2, changed_message=WM_APP+3, error_message=WM_APP+4,
+    preview_message=WM_APP+5,history_message=WM_APP+6;
 constexpr UINT hotkey_id=1, paste_timer=2;
 void fill(HDC dc,RECT r,COLORREF color) { HBRUSH b=CreateSolidBrush(color); FillRect(dc,&r,b); DeleteObject(b); }
 void text(HDC dc,const std::wstring& s,RECT r,COLORREF color,HFONT font,UINT flags=DT_LEFT|DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS) {
@@ -31,12 +32,15 @@ App::~App() {
     if(listener_) RemoveClipboardFormatListener(hwnd_);
     { std::lock_guard lock(queue_mutex_); stopping_=true; jobs_.clear(); }
     queue_cv_.notify_all(); if(worker_.joinable()) worker_.join();
+    previews_.reset();
     if(hwnd_) { tray(false); if(IsWindow(hwnd_)) DestroyWindow(hwnd_); }
     if(font_) DeleteObject(font_); if(small_font_) DeleteObject(small_font_); if(emoji_font_) DeleteObject(emoji_font_);
     instance_=nullptr;
 }
-void App::enqueue(std::function<void()> job) {
-    { std::lock_guard lock(queue_mutex_); if(stopping_) return; jobs_.push_back(std::move(job)); } queue_cv_.notify_one();
+void App::enqueue(std::function<void()> job,bool priority) {
+    { std::lock_guard lock(queue_mutex_); if(stopping_) return;
+        if(priority) jobs_.push_front(std::move(job)); else jobs_.push_back(std::move(job)); }
+    queue_cv_.notify_one();
 }
 void App::report(std::wstring message) {
     { std::lock_guard lock(result_mutex_); error_=std::move(message); } PostMessageW(hwnd_,error_message,0,0);
@@ -53,41 +57,56 @@ void App::run_worker() {
 void App::refresh() {
     enqueue([this] { apps_=index_apps(); if(emoji_.empty()) emoji_=load_emoji(); PostMessageW(hwnd_,changed_message,0,0); });
 }
+void App::refresh_history() {
+    auto history=std::make_shared<const std::vector<Item>>(store_->recent(100));
+    { std::lock_guard lock(result_mutex_); pending_history_=std::move(history); }
+    PostMessageW(hwnd_,history_message,0,0);
+}
 void App::query() {
     int length=GetWindowTextLengthW(edit_); std::wstring input(static_cast<size_t>(length)+1,L'\0');
     GetWindowTextW(edit_,input.data(),length+1); input.resize(length);
     auto q=route_query(input,config_.clipboard_prefix,config_.emoji_prefix);
     auto generation=++generation_;
+    if(previews_) previews_->submit(generation,{});
+    if(q.route==Route::Clipboard&&q.text.empty()&&clipboard_history_) {
+        Snapshot result; result.generation=generation; result.items=*clipboard_history_;
+        result.status=L"Clipboard history  ·  "+std::to_wstring(result.items.size())+L" results";
+        show_results(std::move(result)); return;
+    }
     enqueue([this,q=std::move(q),generation] {
         if(generation!=generation_) return;
         Snapshot result; result.generation=generation;
-        auto candidates=q.route==Route::Apps?apps_:q.route==Route::Emoji?emoji_:store_->recent();
         // Clipboard stays in recency order; fuzzy matching only filters it.
-        if(q.route==Route::Clipboard) {
-            for(auto& i:candidates) if(fuzzy_score(q.text,std::wstring_view(i.title).substr(0,8192))>=0) {
-                result.items.push_back(std::move(i)); if(result.items.size()==100) break;
-            }
-        } else result.items=ranked(std::move(candidates),q.text);
-        for(auto& i:result.items) if(i.kind==Kind::Image) {
-            if(generation!=generation_) return;
-            if(auto cached=thumbnail_cache_.find(i.value);cached!=thumbnail_cache_.end()) {
-                result.images.emplace(i.value,cached->second); continue;
-            }
-            Gdiplus::Bitmap source(i.value.c_str()); UINT w=source.GetWidth(),h=source.GetHeight();
-            if(source.GetLastStatus()!=Gdiplus::Ok||!w||!h) continue;
-            double scale=std::min(1.0,400.0/std::max(w,h));
-            auto bitmap=std::make_shared<Gdiplus::Bitmap>(std::max(1,static_cast<int>(w*scale)),std::max(1,static_cast<int>(h*scale)),PixelFormat32bppPARGB);
-            Gdiplus::Graphics g(bitmap.get()); g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            g.DrawImage(&source,0,0,static_cast<INT>(bitmap->GetWidth()),static_cast<INT>(bitmap->GetHeight()));
-            result.images.emplace(i.value,std::move(bitmap));
-        }
-        thumbnail_cache_=result.images;
+        if(q.route==Route::Clipboard) result.items=store_->search(q.text,100,[this,generation]{return generation!=generation_;});
+        else result.items=ranked(q.route==Route::Apps?apps_:emoji_,q.text);
         result.status=(q.route==Route::Apps?L"Applications":q.route==Route::Clipboard?L"Clipboard history":L"Unicode 16 emoji");
         result.status+=L"  ·  "+std::to_wstring(result.items.size())+L" results";
         if(generation!=generation_) return;
         { std::lock_guard lock(result_mutex_); pending_=std::move(result); }
         PostMessageW(hwnd_,results_message,0,0);
-    });
+    },true);
+}
+void App::show_results(Snapshot result) {
+    if(result.generation!=generation_) return;
+    // Preserve any visible images that are shared by the old and new results.
+    result.images=std::move(shown_.images);
+    shown_=std::move(result); selected_=first_=0;
+    request_previews(); InvalidateRect(hwnd_,nullptr,FALSE);
+}
+void App::request_previews() {
+    if(!previews_) return;
+    requested_previews_.clear(); std::vector<std::wstring> paths;
+    auto add=[&](int index) {
+        if(index<0||index>=static_cast<int>(shown_.items.size())) return;
+        const auto& item=shown_.items[index];
+        if(item.kind==Kind::Image&&requested_previews_.insert(item.value).second) paths.push_back(item.value);
+    };
+    add(selected_); // Prioritize the selected side-pane preview.
+    RECT bounds{}; GetClientRect(hwnd_,&bounds);
+    int rows=std::max(1,static_cast<int>((bounds.bottom-px(110))/px(58)));
+    for(int row=0;row<rows;++row) add(first_+row);
+    std::erase_if(shown_.images,[&](const auto& entry){return !requested_previews_.contains(entry.first);});
+    previews_->submit(shown_.generation,std::move(paths));
 }
 void App::capture() {
     DWORD seq=GetClipboardSequenceNumber(); clipboard_sequence_=seq;
@@ -95,7 +114,7 @@ void App::capture() {
     enqueue([this,seq] {
         if(seq!=clipboard_sequence_||seq==own_sequence_) return;
         auto item=capture_clipboard(hwnd_,config_.state/L"clips_media",seq);
-        if(item) { store_->insert(*item); PostMessageW(hwnd_,changed_message,0,0); }
+        if(item) { store_->insert(*item); refresh_history(); }
     });
 }
 void App::fonts() {
@@ -152,6 +171,7 @@ void App::select(int delta) {
     selected_=std::clamp(selected_+delta,0,static_cast<int>(shown_.items.size())-1);
     RECT r{}; GetClientRect(hwnd_,&r); int rows=std::max(1,static_cast<int>((r.bottom-px(110))/px(58)));
     if(selected_<first_) first_=selected_; if(selected_>=first_+rows) first_=selected_-rows+1;
+    request_previews();
     InvalidateRect(hwnd_,nullptr,FALSE);
 }
 void App::execute() {
@@ -214,14 +234,14 @@ void App::paint() {
         int left=px(28);
         if(item.kind==Kind::Image) { image(item,{left,y+px(5),left+px(42),y+px(47)}); left+=px(54); }
         if(item.kind==Kind::Emoji) { text(buffer,item.value,{left,y,left+px(48),y+px(50)},row_text,emoji_font_); left+=px(54); }
-        text(buffer,single_line(item.title).substr(0,512),{left,y+px(5),split-px(25),y+px(30)},row_text,font_);
+        text(buffer,single_line(item.title.substr(0,512)),{left,y+px(5),split-px(25),y+px(30)},row_text,font_);
         text(buffer,single_line(item.detail).substr(0,512),{left,y+px(30),split-px(25),y+px(50)},row_detail,small_font_);
     }
     if(shown_.items.empty()) text(buffer,L"No results",{px(28),px(110),split,px(150)},muted,font_);
     if(!shown_.items.empty()&&selected_<static_cast<int>(shown_.items.size())) {
         const auto& item=shown_.items[selected_]; RECT preview{split+px(24),px(100),bounds.right-px(24),bounds.bottom-px(85)};
         if(item.kind==Kind::Image) image(item,preview);
-        else text(buffer,(item.kind==Kind::Emoji?item.value+L"\n\n"+item.detail:item.kind==Kind::Text?item.value:item.title+L"\n\n"+item.detail).substr(0,12000),preview,foreground,
+        else text(buffer,(item.kind==Kind::Emoji?item.value+L"\n\n"+item.detail:item.kind==Kind::Text?item.value.substr(0,12000):item.title+L"\n\n"+item.detail).substr(0,12000),preview,foreground,
             item.kind==Kind::Emoji?emoji_font_:font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_WORD_ELLIPSIS);
     }
     }
@@ -300,8 +320,28 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
     case WM_CLIPBOARDUPDATE: capture(); return 0;
     case changed_message: if(IsWindowVisible(hwnd_)) query(); return 0;
     case results_message: {
-        std::lock_guard lock(result_mutex_);
-        if(pending_.generation==generation_) { shown_=std::move(pending_); pending_.generation=0; selected_=first_=0; InvalidateRect(hwnd_,nullptr,FALSE); }
+        Snapshot result;
+        { std::lock_guard lock(result_mutex_); result=std::move(pending_); pending_.generation=0; }
+        show_results(std::move(result));
+        return 0;
+    }
+    case history_message: {
+        { std::lock_guard lock(result_mutex_); if(pending_history_) clipboard_history_=std::move(pending_history_); }
+        if(IsWindowVisible(hwnd_)) {
+            int length=GetWindowTextLengthW(edit_); std::wstring input(static_cast<size_t>(length)+1,L'\0');
+            GetWindowTextW(edit_,input.data(),length+1); input.resize(length);
+            if(route_query(input,config_.clipboard_prefix,config_.emoji_prefix).route==Route::Clipboard) query();
+        }
+        return 0;
+    }
+    case preview_message: {
+        std::vector<PreviewUpdate> updates;
+        { std::lock_guard lock(result_mutex_); updates.swap(pending_previews_); }
+        bool changed=false;
+        for(auto& update:updates) if(update.generation==generation_&&update.generation==shown_.generation&&requested_previews_.contains(update.path)) {
+            shown_.images[update.path]=std::move(update.bitmap); changed=true;
+        }
+        if(changed) InvalidateRect(hwnd_,nullptr,FALSE);
         return 0;
     }
     case error_message: {
@@ -315,7 +355,7 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
         else if(LOWORD(lp)==NIN_SELECT||LOWORD(lp)==NIN_KEYSELECT) toggle(); return 0;
     case WM_ACTIVATE: if(LOWORD(wp)==WA_INACTIVE) ShowWindow(hwnd_,SW_HIDE); return 0;
     case WM_TIMER: if(wp==paste_timer) paste(); return 0;
-    case WM_DPICHANGED: dpi_=HIWORD(wp); fonts(); position(); return 0;
+    case WM_DPICHANGED: dpi_=HIWORD(wp); fonts(); position(); request_previews(); return 0;
     case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_SYSCOLORCHANGE: apply_theme(); return 0;
     case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wp),colors_.foreground); SetBkColor(reinterpret_cast<HDC>(wp),colors_.background); SetDCBrushColor(reinterpret_cast<HDC>(wp),colors_.background); return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
     case WM_ERASEBKGND: return 1;
@@ -325,7 +365,7 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
         int x=static_cast<short>(LOWORD(lp)),y=static_cast<short>(HIWORD(lp)); RECT r{}; GetClientRect(hwnd_,&r);
         if(x<r.right*3/5&&y>=px(82)&&y<r.bottom-px(40)) {
             int index=first_+(y-px(82))/px(58);
-            if(index<static_cast<int>(shown_.items.size())) { selected_=index; InvalidateRect(hwnd_,nullptr,FALSE); if(msg==WM_LBUTTONDBLCLK) execute(); }
+            if(index<static_cast<int>(shown_.items.size())) { selected_=index; request_previews(); InvalidateRect(hwnd_,nullptr,FALSE); if(msg==WM_LBUTTONDBLCLK) execute(); }
         } SetFocus(edit_); return 0;
     }
     case WM_CLOSE: quitting_=true; ShowWindow(hwnd_,SW_HIDE); PostQuitMessage(0); return 0;
@@ -358,7 +398,12 @@ int App::run(HINSTANCE instance) {
     if(!registered_&&!hook_) report(L"The configured hotkey is unavailable. Open ReCall from the tray and choose another hotkey in config.json.");
     listener_=AddClipboardFormatListener(hwnd_)!=FALSE;
     if(!listener_) report(L"Cannot subscribe to clipboard updates.");
-    worker_=std::jthread([this]{run_worker();}); refresh(); ShowWindow(hwnd_,SW_HIDE);
+    previews_=std::make_unique<PreviewLoader>([this](uint64_t generation,const std::wstring& path,PreviewLoader::Bitmap bitmap) {
+        { std::lock_guard lock(result_mutex_); pending_previews_.push_back({generation,path,std::move(bitmap)}); }
+        PostMessageW(hwnd_,preview_message,0,0);
+    });
+    worker_=std::jthread([this]{run_worker();});
+    enqueue([this]{refresh_history();}); refresh(); ShowWindow(hwnd_,SW_HIDE);
     MSG msg{}; BOOL result;
     while((result=GetMessageW(&msg,nullptr,0,0))>0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     return result==-1?1:static_cast<int>(msg.wParam);

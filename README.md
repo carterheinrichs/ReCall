@@ -65,13 +65,14 @@ The listener captures changes while ReCall is running. Worker jobs coalesce supe
 | UTF-8 JSON configuration and packaged/unpackaged state paths | `src/config.cpp`, `src/json.h` |
 | SQLite RAII, schema, retention, PNG cleanup | `src/store.cpp` |
 | Clipboard text/DIB/bitmap capture and PNG restoration | `src/clipboard.cpp` |
+| Asynchronous visible-row image previews and bounded thumbnail cache | `src/previews.cpp` |
 | Known-folder enumeration, shell-link inspection, 32/64-bit App Paths enumeration | `src/catalog.cpp` |
 | Prefix routing and proximity/word-boundary fuzzy scoring | `src/search.cpp` |
 | Embedded Unicode 16 emoji data | `assets/emoji.json` |
 
 The palette is created once, hidden, and reused. It is a borderless topmost tool window with per-monitor DPI handling, double-buffered native drawing, and Windows 11 rounded corners. It follows **Windows Settings → Personalization → Colors → Choose your mode** (the app mode if Windows is set to Custom). Background and text colors come from Windows UISettings, with standard Windows selection colors. There is no custom color theme or Mica backdrop. Changes apply while ReCall is running; Windows contrast themes use their system-provided colors.
 
-A single background worker owns indexing, clipboard capture, database work, fuzzy search, and bounded preview generation. Stale search generations are discarded. The foreground show path does not wait for indexing or SQLite. Applications are enumerated at startup and on tray-menu refresh; links are inspected using `IShellLinkW` and launched through their original `.lnk` so arguments, working directories, and packaged/advertised targets are preserved.
+A background worker owns indexing, clipboard capture, database work, and fuzzy search. The newest 100 clipboard entries are preloaded at startup and refreshed after each capture, so opening clipboard history uses an in-memory list. Filtered clipboard queries stream through the database, stop at 100 matches, and cancel superseded searches. A separate preview worker loads only visible/selected image previews after the list appears, prioritizes the selected item, and keeps a 32-entry thumbnail cache across route changes. Stale search/preview generations are discarded. The foreground show path does not wait for indexing, SQLite, or PNG decoding. Applications are enumerated at startup and on tray-menu refresh; links are inspected using `IShellLinkW` and launched through their original `.lnk` so arguments, working directories, and packaged/advertised targets are preserved.
 
 For clipboard/emoji execution, ReCall populates the clipboard, hides, restores the previously active window, and schedules Ctrl+V after at least 20 ms. It waits for held modifiers/Enter to be released and checks the foreground window again before input synthesis. Set `auto_paste` to `false` for copy-only behavior. Windows foreground restrictions and integrity-level boundaries can prevent focus restoration or input injection; the item still remains available for manual paste.
 
@@ -151,12 +152,12 @@ To enable the workflow, commit these changes and push them to GitHub. No extra b
 
 ## Versioning
 
-`VERSION` is the single source for **major.minor.patch** (currently `0.1.1`). To increment it:
+`VERSION` is the single source for **major.minor.patch** (currently `0.1.2`). To increment it:
 
 ```powershell
-.\tools\Bump-Version.ps1             # patch: 0.1.1 -> 0.1.2
-.\tools\Bump-Version.ps1 -Part minor # minor: 0.1.1 -> 0.2.0
-.\tools\Bump-Version.ps1 -Part major # major: 0.1.1 -> 1.0.0
+.\tools\Bump-Version.ps1             # patch: 0.1.2 -> 0.1.3
+.\tools\Bump-Version.ps1 -Part minor # minor: 0.1.2 -> 0.2.0
+.\tools\Bump-Version.ps1 -Part major # major: 0.1.2 -> 1.0.0
 cmake --preset windows-x64
 cmake --build --preset release
 .\tools\Package.ps1 -Sign
@@ -166,8 +167,8 @@ Commit `VERSION` with the release changes. Lower components reset on a minor/maj
 
 MSIX and EXE versions use **major.minor.patch.revision**:
 
-- **Local builds:** revision `0`, e.g. `0.1.1.0`. Bump the base version when distributing a new local update.
-- **GitHub builds:** revision `${{ github.run_number }}`, e.g. `0.1.1.42`. Each new workflow run increments the revision automatically, including after a base-version bump. Re-running the same GitHub run retains its version.
+- **Local builds:** revision `0`, e.g. `0.1.2.0`. Bump the base version when distributing a new local update.
+- **GitHub builds:** revision `${{ github.run_number }}`, e.g. `0.1.2.42`. Each new workflow run increments the revision automatically, including after a base-version bump. Re-running the same GitHub run retains its version.
 - **Packaging/signing:** `Package.ps1` reads the built EXE's version and stamps it into the staged MSIX manifest. The separate CI signing job preserves that version. It never increments the version during signing, and never packages a new manifest version around an older EXE.
 
 All four components must be between `0` and `65535`; overflow is reported rather than wrapping. GitHub run numbers belong to this workflow, so retaining the same workflow preserves their sequence. If you replace/reset the workflow or move between a CI build and a local build, bump the base version so the update is greater than the installed version. For Microsoft Store publication, the fourth component has separate Store rules; this workflow produces direct-install/sideload packages.
@@ -192,6 +193,6 @@ ctest --preset release
 .\tools\Update-Emoji.ps1
 ```
 
-`core_tests` covers fuzzy alignment/ranking, prefix routing, JSON parsing, Unicode escapes, and word-deletion boundaries. `storage_tests` exercises real SQLite persistence, WAL, ordering, Unicode text, character counts, retention, and image-file cleanup in an isolated temporary directory. `signing_tests.ps1` checks certificate discovery, CER-based identity reuse, and invalid-certificate rejection using temporary in-memory certificates without modifying the certificate store (PowerShell 7). The smoke script launches the actual GUI, verifies hidden startup, opens the palette, submits an emoji query, navigates, dismisses with Escape, and exits. It needs an interactive desktop and no already-running instance; it does not execute a result or alter the clipboard. Clipboard format round trips and auto-paste still require interactive validation.
+`core_tests` covers fuzzy alignment/ranking, prefix routing, JSON parsing, Unicode escapes, and word-deletion boundaries. `storage_tests` exercises real SQLite persistence, WAL, ordering, Unicode text, character counts, retention, image-file cleanup, limited/filtered history queries, cancellation, and full text preservation in an isolated temporary directory. `preview_tests` verifies background image decoding, sizing, cache reuse, missing-image handling, and preview priority using synthetic PNGs. `signing_tests.ps1` checks certificate discovery, CER-based identity reuse, and invalid-certificate rejection using temporary in-memory certificates without modifying the certificate store (PowerShell 7). The smoke script launches the actual GUI, verifies hidden startup, opens the palette, submits an emoji query, navigates, dismisses with Escape, and exits. It needs an interactive desktop and no already-running instance; it does not execute a result or alter the clipboard. Clipboard format round trips and auto-paste still require interactive validation.
 
 The checked-in emoji JSON contains 3,781 fully-qualified Unicode 16 sequences. `Update-Emoji.ps1` regenerates it from Unicode's `emoji-test.txt`; shortcodes are normalized descriptive names and tags include names, groups, and subgroups. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

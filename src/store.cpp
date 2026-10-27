@@ -1,4 +1,5 @@
 #include "store.h"
+#include "search.h"
 #include <sqlite3.h>
 #include <algorithm>
 #include <set>
@@ -34,7 +35,8 @@ Store::Store(const fs::path& state,unsigned limit):media_(state/L"clips_media"),
              "CREATE TABLE IF NOT EXISTS clipboard_items (id INTEGER PRIMARY KEY AUTOINCREMENT,"
              "type TEXT NOT NULL CHECK(type IN ('text','image')), content TEXT, char_count INTEGER DEFAULT 0,"
              "created_at DATETIME DEFAULT CURRENT_TIMESTAMP);"
-             "CREATE INDEX IF NOT EXISTS idx_clipboard_created ON clipboard_items(created_at DESC);");
+             "CREATE INDEX IF NOT EXISTS idx_clipboard_created ON clipboard_items(created_at DESC);"
+             "CREATE INDEX IF NOT EXISTS idx_clipboard_recent ON clipboard_items(created_at DESC,id DESC);");
         // Reclaim PNGs left behind by a crash between disk capture and DB insertion/retention.
         std::set<fs::path> live;
         Statement q(db_,"SELECT content FROM clipboard_items WHERE type='image'");
@@ -64,16 +66,28 @@ void Store::insert(const Item& item) {
     } catch(...) { sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr); throw; }
     for(auto& p:expired) if(p.parent_path()==media_) { std::error_code ec; fs::remove(p,ec); }
 }
-std::vector<Item> Store::recent() {
-    Statement q(db_,"SELECT id,type,content,char_count,created_at FROM clipboard_items ORDER BY created_at DESC,id DESC");
+std::vector<Item> Store::recent(size_t limit) {
+    return search({},limit);
+}
+std::vector<Item> Store::search(std::wstring_view query,size_t limit,const std::function<bool()>& cancelled) {
+    Statement q(db_,query.empty()?
+        "SELECT id,type,content,char_count,created_at FROM clipboard_items ORDER BY created_at DESC,id DESC LIMIT ?":
+        "SELECT id,type,content,char_count,created_at,substr(content,1,8192) FROM clipboard_items ORDER BY created_at DESC,id DESC LIMIT ?");
+    sqlite3_bind_int64(q.p,1,query.empty()&&limit?static_cast<sqlite3_int64>(limit):-1);
     std::vector<Item> out;
     int rc;
     while((rc=sqlite3_step(q.p))==SQLITE_ROW) {
+        if(cancelled&&cancelled()) return {};
         Item i; i.id=sqlite3_column_int64(q.p,0); i.kind=column(q.p,1)=="image"?Kind::Image:Kind::Text;
-        i.value=wide(column(q.p,2)); i.title=i.kind==Kind::Image?L"Image":i.value;
+        if(!query.empty()) {
+            const auto candidate=i.kind==Kind::Image?L"Image":wide(column(q.p,5));
+            if(fuzzy_score(query,std::wstring_view(candidate).substr(0,8192))<0) continue;
+        }
+        i.value=wide(column(q.p,2)); i.title=i.kind==Kind::Image?L"Image":i.value.substr(0,8192);
         i.detail=wide(column(q.p,4));
         if(i.kind==Kind::Text) i.detail+=L"  ·  "+std::to_wstring(sqlite3_column_int64(q.p,3))+L" characters";
         out.push_back(std::move(i));
+        if(limit&&out.size()>=limit) return out;
     }
     if(rc!=SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
     return out;
