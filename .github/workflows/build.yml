@@ -1,0 +1,99 @@
+name: Windows build and MSIX
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recall-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: Build, test, and package (x64)
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset windows-x64
+
+      - name: Build Release
+        run: cmake --build --preset release --parallel
+
+      - name: Test C++ core and storage
+        run: ctest --preset release
+
+      - name: Test signing certificate selection
+        run: ./tests/signing_tests.ps1
+
+      - name: Create unsigned MSIX
+        run: ./tools/Package.ps1
+
+      - name: Collect artifacts
+        run: |
+          New-Item -ItemType Directory -Force out/artifacts | Out-Null
+          Copy-Item out/build/Release/ReCall.exe, out/ReCall.msix, README.md, THIRD_PARTY_NOTICES.md out/artifacts/
+
+      - name: Upload executable and unsigned package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReCall-windows-x64-unsigned
+          path: out/artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  sign:
+    name: Sign MSIX (when configured)
+    needs: build
+    # Pull requests never receive signing credentials, including same-repo PRs.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download tested executable
+        uses: actions/download-artifact@v4
+        with:
+          name: ReCall-windows-x64-unsigned
+          path: out/artifacts/
+
+      - name: Package and sign using the existing certificate
+        id: signing
+        env:
+          RECALL_SIGNING_PFX_BASE64: ${{ secrets.RECALL_SIGNING_PFX_BASE64 }}
+          RECALL_SIGNING_PFX_PASSWORD: ${{ secrets.RECALL_SIGNING_PFX_PASSWORD }}
+        run: |
+          if (!$env:RECALL_SIGNING_PFX_BASE64 -and !$env:RECALL_SIGNING_PFX_PASSWORD) {
+            Write-Host '::notice::Signing secrets are not configured. The unsigned artifact is available.'
+            return
+          }
+          ./tools/Package-CI.ps1 -Executable ./out/artifacts/ReCall.exe
+          'signed=true' >> $env:GITHUB_OUTPUT
+
+      - name: Collect signed package
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          New-Item -ItemType Directory -Force out/signed | Out-Null
+          Copy-Item out/ReCall.msix, out/ReCall.Development.cer, README.md, THIRD_PARTY_NOTICES.md out/signed/
+
+      - name: Upload signed package and public certificate
+        if: steps.signing.outputs.signed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReCall-windows-x64-signed
+          path: out/signed/
+          if-no-files-found: error
+          retention-days: 14
