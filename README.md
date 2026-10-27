@@ -69,7 +69,7 @@ The listener captures changes while ReCall is running. Worker jobs coalesce supe
 | Prefix routing and proximity/word-boundary fuzzy scoring | `src/search.cpp` |
 | Embedded Unicode 16 emoji data | `assets/emoji.json` |
 
-The palette is created once, hidden, and reused. It is a borderless topmost tool window with per-monitor DPI handling, double-buffered native drawing, Windows 11 rounded corners, and DWM dark-mode/Mica backdrop requests. The opaque dark content surface is intentional; this is a custom Win32 renderer rather than WinUI controls. DWM material appearance depends on system composition settings.
+The palette is created once, hidden, and reused. It is a borderless topmost tool window with per-monitor DPI handling, double-buffered native drawing, and Windows 11 rounded corners. It follows **Windows Settings → Personalization → Colors → Choose your mode** (the app mode if Windows is set to Custom). Background and text colors come from Windows UISettings, with standard Windows selection colors. There is no custom color theme or Mica backdrop. Changes apply while ReCall is running; Windows contrast themes use their system-provided colors.
 
 A single background worker owns indexing, clipboard capture, database work, fuzzy search, and bounded preview generation. Stale search generations are discarded. The foreground show path does not wait for indexing or SQLite. Applications are enumerated at startup and on tray-menu refresh; links are inspected using `IShellLinkW` and launched through their original `.lnk` so arguments, working directories, and packaged/advertised targets are preserved.
 
@@ -145,15 +145,49 @@ The PFX and its base64 representation contain your private signing key; keep the
 
 On successful **`main` pushes or manual runs on `main`**, a separate job downloads the tested executable, imports the PFX on its ephemeral runner, repackages/signs using that exact certificate, and uploads **`ReCall-windows-x64-signed`**. This artifact includes the signed MSIX and matching public `.cer`; users who already trust the certificate do not need to import a new one for each build. The temporary PFX and newly imported certificate entries are removed afterward, and the hosted runner is discarded.
 
-Without either secret, signing is skipped and the unsigned artifact is still available. If only one secret is configured, or the certificate is invalid, signing fails with an error. Pull requests never run the signing job. As with local packaging, the certificate subject must match the manifest publisher. The MSIX version comes from `packaging/AppxManifest.xml`; increase its four-part `Version` before distributing an update to an installed package.
+Without either secret, signing is skipped and the unsigned artifact is still available. If only one secret is configured, or the certificate is invalid, signing fails with an error. Pull requests never run the signing job. As with local packaging, the certificate subject must match the manifest publisher. Package versions are automatic as described below.
 
 To enable the workflow, commit these changes and push them to GitHub. No extra build secrets are needed for unsigned builds.
+
+## Versioning
+
+`VERSION` is the single source for **major.minor.patch** (currently `0.1.1`). To increment it:
+
+```powershell
+.\tools\Bump-Version.ps1             # patch: 0.1.1 -> 0.1.2
+.\tools\Bump-Version.ps1 -Part minor # minor: 0.1.1 -> 0.2.0
+.\tools\Bump-Version.ps1 -Part major # major: 0.1.1 -> 1.0.0
+cmake --preset windows-x64
+cmake --build --preset release
+.\tools\Package.ps1 -Sign
+```
+
+Commit `VERSION` with the release changes. Lower components reset on a minor/major bump. CMake reads this file and generates matching EXE file/product version resources, the native application manifest, and the tray tooltip version.
+
+MSIX and EXE versions use **major.minor.patch.revision**:
+
+- **Local builds:** revision `0`, e.g. `0.1.1.0`. Bump the base version when distributing a new local update.
+- **GitHub builds:** revision `${{ github.run_number }}`, e.g. `0.1.1.42`. Each new workflow run increments the revision automatically, including after a base-version bump. Re-running the same GitHub run retains its version.
+- **Packaging/signing:** `Package.ps1` reads the built EXE's version and stamps it into the staged MSIX manifest. The separate CI signing job preserves that version. It never increments the version during signing, and never packages a new manifest version around an older EXE.
+
+All four components must be between `0` and `65535`; overflow is reported rather than wrapping. GitHub run numbers belong to this workflow, so retaining the same workflow preserves their sequence. If you replace/reset the workflow or move between a CI build and a local build, bump the base version so the update is greater than the installed version. For Microsoft Store publication, the fourth component has separate Store rules; this workflow produces direct-install/sideload packages.
+
+For a custom build revision:
+
+```powershell
+cmake --preset windows-x64 -DRECALL_BUILD_REVISION=42
+# Reset the cached override for ordinary local builds:
+cmake --preset windows-x64 -DRECALL_BUILD_REVISION=0
+```
+
+The source `packaging/AppxManifest.xml` is a template; package the generated/staged manifest using `Package.ps1`, rather than packing the source template directly.
 
 ## Checks and data regeneration
 
 ```powershell
 ctest --preset release
 .\tests\signing_tests.ps1
+.\tests\version_tests.ps1
 .\tools\Smoke-Test.ps1
 .\tools\Update-Emoji.ps1
 ```

@@ -124,7 +124,7 @@ void App::apply_theme() {
 void App::toggle() {
     if(IsWindowVisible(hwnd_)) { ShowWindow(hwnd_,SW_HIDE); return; }
     last_active_=GetForegroundWindow(); paste_target_=nullptr; KillTimer(hwnd_,paste_timer);
-    apply_theme(); position(); ShowWindow(hwnd_,SW_SHOW); SetForegroundWindow(hwnd_); SetFocus(edit_);
+    position(); ShowWindow(hwnd_,SW_SHOW); SetForegroundWindow(hwnd_); SetFocus(edit_);
     SendMessageW(edit_,EM_SETSEL,0,-1); query();
 }
 void App::tray(bool add) {
