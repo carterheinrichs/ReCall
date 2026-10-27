@@ -23,6 +23,7 @@ ReCall starts hidden with a notification-area icon. Press **Win+Space** or click
 | `> meeting` | Filter clipboard history, newest first |
 | `:` or `:smile` | Browse/search emoji names and category tags |
 | Up / Down, Page Up / Page Down | Move selection |
+| Ctrl+Backspace | Delete the previous word or the selected text |
 | Enter | Launch or copy and paste the selection |
 | Escape, focus loss | Hide the palette |
 
@@ -82,14 +83,24 @@ For clipboard/emoji execution, ReCall populates the clipboard, hides, restores t
 # Unsigned package (also validates the manifest with MakeAppx)
 .\tools\Package.ps1
 
-# Package and sign using a generated development certificate
+# Package and sign (automatically reuses your existing signing certificate)
 .\tools\Package.ps1 -Sign
 
-# Or use an existing CurrentUser\My certificate
+# Or select the signing identity using its public .cer file
+.\tools\Package.ps1 -Sign -CertificateFile .\my-signing-certificate.cer
+
+# Explicit thumbprints are still supported
 .\tools\Package.ps1 -Sign -CertificateThumbprint YOUR_CERTIFICATE_THUMBPRINT
 ```
 
-Artifacts are `out\ReCall.msix` and, when signing, `out\ReCall.Development.cer`. The certificate subject must match `Publisher` in `packaging\AppxManifest.xml` (default: `CN=ReCall Development`). The signing script creates a development certificate only when `-Sign` is supplied without a thumbprint. It does not install the certificate or the app.
+Artifacts are `out\ReCall.msix` and, when signing, `out\ReCall.Development.cer`. The certificate subject must match `Publisher` in `packaging\AppxManifest.xml` (default: `CN=ReCall Development`). With `-Sign`, certificate selection is automatic:
+
+1. Use an explicitly supplied `-CertificateFile` or `-CertificateThumbprint`, if provided.
+2. Otherwise read the thumbprint from the existing `out\ReCall.Development.cer` and find its matching private-key certificate in `CurrentUser\My`.
+3. If that file does not exist, discover a valid code-signing certificate matching the manifest publisher in `CurrentUser\My` (newest issuance first).
+4. Only if neither a certificate file nor an explicit thumbprint pins the identity, and no usable certificate exists, generate a development certificate for the default development publisher.
+
+Rebuilding with `-Sign` reuses the same signing identity, so you do not need to trust a new certificate after each build. A `.cer` contains the **public certificate only**: the corresponding private key must still be present on the signing computer. If the pinned certificate is missing, expired, unsuitable for code signing, or lacks its private key, packaging fails with an explanation rather than silently replacing the signing identity. To deliberately switch certificates, pass an explicit file or thumbprint. The script does not install the certificate or the app.
 
 For local installation, trust the exported development certificate in **Local Machine → Trusted People** (administrator action), then install the signed package:
 
@@ -105,10 +116,11 @@ The MSIX targets x64 Windows 11 22H2+ and declares `runFullTrust`. Development a
 
 ```powershell
 ctest --preset release
+.\tests\signing_tests.ps1
 .\tools\Smoke-Test.ps1
 .\tools\Update-Emoji.ps1
 ```
 
-`core_tests` covers fuzzy alignment/ranking, prefix routing, JSON parsing, and Unicode escapes. `storage_tests` exercises real SQLite persistence, WAL, ordering, Unicode text, character counts, retention, and image-file cleanup in an isolated temporary directory. The smoke script launches the actual GUI, verifies hidden startup, opens the palette, submits an emoji query, navigates, dismisses with Escape, and exits. It needs an interactive desktop and no already-running instance; it does not execute a result or alter the clipboard. Clipboard format round trips and auto-paste still require interactive validation.
+`core_tests` covers fuzzy alignment/ranking, prefix routing, JSON parsing, Unicode escapes, and word-deletion boundaries. `storage_tests` exercises real SQLite persistence, WAL, ordering, Unicode text, character counts, retention, and image-file cleanup in an isolated temporary directory. `signing_tests.ps1` checks certificate discovery, CER-based identity reuse, and invalid-certificate rejection using temporary in-memory certificates without modifying the certificate store (PowerShell 7). The smoke script launches the actual GUI, verifies hidden startup, opens the palette, submits an emoji query, navigates, dismisses with Escape, and exits. It needs an interactive desktop and no already-running instance; it does not execute a result or alter the clipboard. Clipboard format round trips and auto-paste still require interactive validation.
 
 The checked-in emoji JSON contains 3,781 fully-qualified Unicode 16 sequences. `Update-Emoji.ps1` regenerates it from Unicode's `emoji-test.txt`; shortcodes are normalized descriptive names and tags include names, groups, and subgroups. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -1,11 +1,25 @@
 #include "search.h"
 #include "json.h"
+#include "editing.h"
 #include <iostream>
 
 using namespace recall;
 int main() {
     int failures=0;
     auto check=[&](bool ok,const char* what) { if(!ok) { std::cerr << "FAIL: " << what << '\n'; ++failures; } };
+    auto erase=[](std::wstring s,size_t begin,size_t end) {
+        auto range=word_erase_range(s,begin,end); s.erase(range.first,range.second-range.first); return s;
+    };
+    check(erase(L"hello world",11,11)==L"hello ","Ctrl+Backspace deletes previous word");
+    check(erase(L"hello world  ",13,13)==L"hello ","Ctrl+Backspace skips trailing whitespace");
+    check(erase(L"hello world",8,8)==L"hello rld","Ctrl+Backspace in middle of word");
+    check(erase(L"hello world",6,11)==L"hello ","Ctrl+Backspace deletes selection");
+    check(erase(L"hello-world",11,11)==L"hello-","punctuation is a boundary");
+    check(erase(L"> 日本語",5,5)==L"> ","Unicode word deletion preserves prefix");
+    check(erase(L"hello 😀",8,8)==L"hello ","emoji surrogate pair remains intact");
+    check(erase(L"cafe\u0301",5,5).empty(),"combining marks stay with word");
+    check(erase(L"hello",0,0)==L"hello","Ctrl+Backspace at start");
+    check(erase(L"",0,0).empty(),"Ctrl+Backspace on empty edit");
     check(fuzzy_score(L"vsc",L"VisualStudioCode")>=0,"CamelCase subsequence");
     check(fuzzy_score(L"abc",L"acb")==-1,"out-of-order letters rejected");
     check(fuzzy_score(L"",L"")==0,"empty query");

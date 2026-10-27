@@ -2,6 +2,7 @@
 #include "catalog.h"
 #include "clipboard.h"
 #include "search.h"
+#include "editing.h"
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -219,13 +220,29 @@ LRESULT CALLBACK App::edit_proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,
     auto* self=reinterpret_cast<App*>(data);
     if(msg==WM_KEYDOWN) {
         switch(wp) {
+        case VK_BACK:
+            if(GetKeyState(VK_CONTROL)&0x8000) {
+                DWORD begin{},end{};
+                SendMessageW(hwnd,EM_GETSEL,reinterpret_cast<WPARAM>(&begin),reinterpret_cast<LPARAM>(&end));
+                int length=GetWindowTextLengthW(hwnd);
+                std::wstring input(static_cast<size_t>(length)+1,L'\0');
+                GetWindowTextW(hwnd,input.data(),length+1); input.resize(length);
+                auto range=word_erase_range(input,begin,end);
+                if(range.first!=range.second) {
+                    SendMessageW(hwnd,EM_SETSEL,static_cast<WPARAM>(range.first),static_cast<LPARAM>(range.second));
+                    SendMessageW(hwnd,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(L""));
+                }
+                return 0;
+            }
+            break;
         case VK_ESCAPE: ShowWindow(self->hwnd_,SW_HIDE); return 0;
         case VK_UP: self->select(-1); return 0; case VK_DOWN: self->select(1); return 0;
         case VK_PRIOR: self->select(-7); return 0; case VK_NEXT: self->select(7); return 0;
         case VK_RETURN: self->execute(); return 0;
         }
     }
-    if(msg==WM_CHAR&&(wp==VK_RETURN||wp==VK_ESCAPE)) return 0;
+    // TranslateMessage produces DEL for Ctrl+Backspace on a standard EDIT control.
+    if(msg==WM_CHAR&&(wp==VK_RETURN||wp==VK_ESCAPE||wp==0x7F||(wp==VK_BACK&&(GetKeyState(VK_CONTROL)&0x8000)))) return 0;
     return DefSubclassProc(hwnd,msg,wp,lp);
 }
 LRESULT CALLBACK App::keyboard_proc(int code,WPARAM wp,LPARAM lp) {
