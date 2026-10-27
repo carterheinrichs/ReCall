@@ -32,7 +32,7 @@ class App {
     UINT taskbar_created_{};
     int dpi_=96, selected_=0, first_=0;
     std::vector<Item> apps_,emoji_;
-    std::unique_ptr<PreviewLoader> previews_;
+    std::unique_ptr<PreviewLoader> previews_,icons_;
     std::set<std::wstring> requested_previews_;
     struct PreviewUpdate { uint64_t generation; std::wstring path; PreviewLoader::Bitmap bitmap; };
     std::vector<PreviewUpdate> pending_previews_;

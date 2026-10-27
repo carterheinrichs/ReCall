@@ -33,7 +33,7 @@ App::~App() {
     if(listener_) RemoveClipboardFormatListener(hwnd_);
     { std::lock_guard lock(queue_mutex_); stopping_=true; jobs_.clear(); }
     queue_cv_.notify_all(); if(worker_.joinable()) worker_.join();
-    previews_.reset();
+    previews_.reset(); icons_.reset();
     if(hwnd_) { tray(false); if(IsWindow(hwnd_)) DestroyWindow(hwnd_); }
     if(font_) DeleteObject(font_); if(small_font_) DeleteObject(small_font_); if(emoji_font_) DeleteObject(emoji_font_);
     instance_=nullptr;
@@ -69,6 +69,7 @@ void App::query() {
     auto q=route_query(input,config_.clipboard_prefix,config_.emoji_prefix);
     auto generation=++generation_;
     if(previews_) previews_->submit(generation,{});
+    if(icons_) icons_->submit(generation,{});
     if(q.route==Route::Clipboard&&q.text.empty()&&clipboard_history_) {
         Snapshot result; result.generation=generation; result.items=*clipboard_history_;
         result.status=L"Clipboard history  ·  "+std::to_wstring(result.items.size())+L" results";
@@ -96,11 +97,13 @@ void App::show_results(Snapshot result) {
 }
 void App::request_previews() {
     if(!previews_) return;
-    requested_previews_.clear(); std::vector<std::wstring> paths;
+    requested_previews_.clear(); std::vector<std::wstring> paths,icon_paths;
     auto add=[&](int index) {
         if(index<0||index>=static_cast<int>(shown_.items.size())) return;
         const auto& item=shown_.items[index];
-        if(item.kind==Kind::Image&&requested_previews_.insert(item.value).second) paths.push_back(item.value);
+        if((item.kind==Kind::Image||item.kind==Kind::App)&&requested_previews_.insert(item.value).second) {
+            (item.kind==Kind::App?icon_paths:paths).push_back(item.value);
+        }
     };
     add(selected_); // Prioritize the selected side-pane preview.
     RECT bounds{}; GetClientRect(hwnd_,&bounds);
@@ -108,6 +111,7 @@ void App::request_previews() {
     for(int row=0;row<rows;++row) add(first_+row);
     std::erase_if(shown_.images,[&](const auto& entry){return !requested_previews_.contains(entry.first);});
     previews_->submit(shown_.generation,std::move(paths));
+    if(icons_) icons_->submit(shown_.generation,std::move(icon_paths));
 }
 void App::capture() {
     DWORD seq=GetClipboardSequenceNumber(); clipboard_sequence_=seq;
@@ -221,7 +225,7 @@ void App::paint() {
     {
     Gdiplus::Graphics graphics(buffer);
     auto image=[&](const Item& item,RECT target) {
-        auto it=shown_.images.find(item.value); if(it==shown_.images.end()) return;
+        auto it=shown_.images.find(item.value); if(it==shown_.images.end()||!it->second) return;
         auto b=it->second; double scale=std::min(static_cast<double>(target.right-target.left)/b->GetWidth(),static_cast<double>(target.bottom-target.top)/b->GetHeight());
         int w=static_cast<int>(b->GetWidth()*scale),h=static_cast<int>(b->GetHeight()*scale);
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
@@ -235,6 +239,7 @@ void App::paint() {
         const auto row_detail=selected?colors_.selection_text:muted;
         if(selected) fill(buffer,{px(12),y,split-px(12),y+px(55)},colors_.selection);
         int left=px(28);
+        if(item.kind==Kind::App) { image(item,{left,y+px(11),left+px(32),y+px(43)}); left+=px(44); }
         if(item.kind==Kind::Image) { image(item,{left,y+px(5),left+px(42),y+px(47)}); left+=px(54); }
         if(item.kind==Kind::Emoji) { text(buffer,item.value,{left,y,left+px(48),y+px(50)},row_text,emoji_font_); left+=px(54); }
         text(buffer,single_line(item.title.substr(0,512)),{left,y+px(5),split-px(25),y+px(30)},row_text,font_);
@@ -405,6 +410,10 @@ int App::run(HINSTANCE instance) {
         { std::lock_guard lock(result_mutex_); pending_previews_.push_back({generation,path,std::move(bitmap)}); }
         PostMessageW(hwnd_,preview_message,0,0);
     });
+    icons_=std::make_unique<PreviewLoader>([this](uint64_t generation,const std::wstring& path,PreviewLoader::Bitmap bitmap) {
+        { std::lock_guard lock(result_mutex_); pending_previews_.push_back({generation,path,std::move(bitmap)}); }
+        PostMessageW(hwnd_,preview_message,0,0);
+    },PreviewLoader::Mode::AppIcons);
     worker_=std::jthread([this]{run_worker();});
     enqueue([this]{refresh_history();}); refresh(); ShowWindow(hwnd_,SW_HIDE);
     MSG msg{}; BOOL result;

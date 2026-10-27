@@ -1,9 +1,19 @@
 #include "previews.h"
 #include <algorithm>
 #include <map>
+#include <shellapi.h>
 
 namespace recall {
 namespace {
+PreviewLoader::Bitmap load_icon(const std::wstring& path) {
+    // Preserve custom shortcut icons by asking the Shell about the original link.
+    SHFILEINFOW info{};
+    if(!SHGetFileInfoW(path.c_str(),0,&info,sizeof(info),SHGFI_ICON|SHGFI_LARGEICON)) return {};
+    auto bitmap=PreviewLoader::Bitmap(Gdiplus::Bitmap::FromHICON(info.hIcon));
+    DestroyIcon(info.hIcon);
+    if(!bitmap||bitmap->GetLastStatus()!=Gdiplus::Ok) return {};
+    return bitmap;
+}
 PreviewLoader::Bitmap load_preview(const std::wstring& path) {
     Gdiplus::Bitmap source(path.c_str());
     if(source.GetLastStatus()!=Gdiplus::Ok) return {};
@@ -18,7 +28,7 @@ PreviewLoader::Bitmap load_preview(const std::wstring& path) {
     return bitmap;
 }
 }
-PreviewLoader::PreviewLoader(Callback callback):callback_(std::move(callback)),thread_([this]{run();}) {}
+PreviewLoader::PreviewLoader(Callback callback,Mode mode):callback_(std::move(callback)),mode_(mode),thread_([this]{run();}) {}
 PreviewLoader::~PreviewLoader() {
     { std::lock_guard lock(mutex_); stopping_=true; ++revision_; }
     cv_.notify_one(); thread_.join();
@@ -42,10 +52,10 @@ void PreviewLoader::run() {
                 Bitmap bitmap;
                 if(auto it=cache.find(path);it!=cache.end()) { bitmap=it->second.bitmap; it->second.used=++tick; }
                 else {
-                    bitmap=load_preview(path);
-                    if(!bitmap) continue;
+                    bitmap=mode_==Mode::AppIcons?load_icon(path):load_preview(path);
+                    if(!bitmap&&mode_==Mode::Images) continue; // Cache icon failures too.
                     cache.emplace(path,Cached{bitmap,++tick});
-                    if(cache.size()>32) {
+                    if(cache.size()>(mode_==Mode::AppIcons?256u:32u)) {
                         auto oldest=std::min_element(cache.begin(),cache.end(),[](const auto& a,const auto& b){return a.second.used<b.second.used;});
                         cache.erase(oldest);
                     }

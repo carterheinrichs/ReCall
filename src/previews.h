@@ -14,12 +14,14 @@ class PreviewLoader {
 public:
     using Bitmap = std::shared_ptr<Gdiplus::Bitmap>;
     using Callback = std::function<void(uint64_t,const std::wstring&,Bitmap)>;
-    explicit PreviewLoader(Callback callback);
+    enum class Mode { Images, AppIcons };
+    explicit PreviewLoader(Callback callback,Mode mode=Mode::Images);
     ~PreviewLoader();
     void submit(uint64_t generation,std::vector<std::wstring> paths);
 private:
     struct Request { uint64_t generation{}, revision{}; std::vector<std::wstring> paths; };
     Callback callback_;
+    Mode mode_;
     std::mutex mutex_;
     std::condition_variable cv_;
     Request pending_;

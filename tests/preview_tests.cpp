@@ -54,6 +54,19 @@ int main() {
             auto reused=wait(5,second);
             check(reused.bitmap==b.bitmap,"cache survives route changes");
         }
+        {
+            wchar_t system[MAX_PATH]{}; GetSystemDirectoryW(system,MAX_PATH);
+            auto executable=(fs::path(system)/L"notepad.exe").wstring();
+            PreviewLoader loader([&](uint64_t gen,const std::wstring& path,PreviewLoader::Bitmap bitmap) {
+                { std::lock_guard lock(mutex); updates.push_back({gen,path,std::move(bitmap),std::this_thread::get_id()}); }
+                cv.notify_all();
+            },PreviewLoader::Mode::AppIcons);
+            loader.submit(10,{executable}); auto icon=wait(10,executable);
+            check(icon.thread!=caller,"Shell icons loaded off the caller thread");
+            check(icon.bitmap&&icon.bitmap->GetWidth()>0,"application icon extracted");
+            loader.submit(11,{executable});
+            check(wait(11,executable).bitmap==icon.bitmap,"application icon bitmap reused from cache");
+        }
     } catch(const std::exception& e) { std::cerr << e.what() << '\n'; ++failures; }
     fs::remove_all(temp); Gdiplus::GdiplusShutdown(token);
     std::cout << (failures?"Preview checks failed":"Preview checks passed") << '\n'; return failures?1:0;
