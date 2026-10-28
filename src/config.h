@@ -2,7 +2,7 @@
 #include "common.h"
 namespace recall {
 enum class ColorMode { System, Light, Dark };
-enum class ThemeStyle { Default, LiquidGlass, Windows95, Windows7 };
+enum class ThemeStyle { Default, LiquidGlass };
 struct Config {
     UINT modifiers = MOD_WIN;
     UINT key = VK_SPACE;

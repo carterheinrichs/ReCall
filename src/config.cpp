@@ -71,9 +71,7 @@ Config Config::parse(std::string_view text) {
             auto value=v->string();
             if(value=="default") c.theme=ThemeStyle::Default;
             else if(value=="liquid_glass") c.theme=ThemeStyle::LiquidGlass;
-            else if(value=="windows_95"||value=="classic_windows") c.theme=ThemeStyle::Windows95;
-            else if(value=="windows_7") c.theme=ThemeStyle::Windows7;
-            else throw std::runtime_error("appearance.theme must be default, liquid_glass, windows_95, or windows_7");
+            else throw std::runtime_error("appearance.theme must be default or liquid_glass");
         }
         if(auto v=appearance->get("opacity")) {
             const auto* x=std::get_if<double>(&v->value);

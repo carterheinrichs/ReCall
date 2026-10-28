@@ -1,6 +1,8 @@
 #include "appearance.h"
 #include "config.h"
 #include "theme.h"
+#include "glass.h"
+#include <gdiplus.h>
 #include <iostream>
 
 using namespace recall;
@@ -15,7 +17,7 @@ int main() {
         auto unchanged=resolve_theme(baseline,ColorMode::System,ThemeStyle::Default);
         check(unchanged.background==baseline.background&&unchanged.selection==baseline.selection&&unchanged.border==baseline.border,"default palette unchanged");
         baseline.high_contrast=false;
-        for(auto style:{ThemeStyle::Default,ThemeStyle::LiquidGlass,ThemeStyle::Windows95,ThemeStyle::Windows7}) {
+        for(auto style:{ThemeStyle::Default,ThemeStyle::LiquidGlass}) {
             auto light=resolve_theme(baseline,ColorMode::Light,style),dark=resolve_theme(baseline,ColorMode::Dark,style);
             check(!light.dark&&dark.dark&&light.background!=dark.background,"each theme supports explicit light and dark");
             baseline.high_contrast=true;
@@ -24,13 +26,32 @@ int main() {
             baseline.high_contrast=false;
         }
         check(Config::parse(R"({"appearance":{"theme":"liquid_glass","mode":"dark"}})").theme==ThemeStyle::LiquidGlass,"glass setting parsed");
-        auto classic=Config::parse(R"({"appearance":{"theme":"classic_windows","mode":"light"}})");
-        check(classic.theme==ThemeStyle::Windows95&&classic.color_mode==ColorMode::Light,"classic and mode settings parsed");
-        check(Config::parse(R"({"appearance":{"theme":"windows_95"}})").theme==ThemeStyle::Windows95,"Windows 95 setting parsed");
-        check(Config::parse(R"({"appearance":{"theme":"windows_7"}})").theme==ThemeStyle::Windows7,"Windows 7 setting parsed");
-        auto win95=resolve_theme(baseline,ColorMode::Light,ThemeStyle::Windows95);
-        auto win7=resolve_theme(baseline,ColorMode::Light,ThemeStyle::Windows7);
-        check(win95.background!=win7.background&&win95.selection!=win7.selection,"95 and 7 have distinct palettes");
+        for(auto removed:{"classic_windows","windows_95","windows_7"}) {
+            bool rejected=false;
+            try { Config::parse(std::string("{\"appearance\":{\"theme\":\"")+removed+"\"}}"); }
+            catch(const std::exception&) { rejected=true; }
+            check(rejected,"removed Windows themes rejected with supported values in error");
+        }
+        ULONG_PTR token{}; Gdiplus::GdiplusStartupInput input;
+        if(Gdiplus::GdiplusStartup(&token,&input,nullptr)!=Gdiplus::Ok) throw std::runtime_error("GDI+ startup failed");
+        {
+            constexpr int width=300,height=220;
+            std::vector<DWORD> pixels(width*height);
+            draw_glass_material(pixels.data(),width,height,96,true,80,true,82,180);
+            auto material=pixels;
+            check((material[75*width+30]>>24)==26,"reference dark glass uses ten percent tint rather than dense acrylic");
+            check((material[100*width+30]>>24)>26&&(material[100*width+30]>>24)<100,"selected panel remains translucent");
+            prepare_glass_content(pixels.data(),material);
+            pixels[75*width+30]=0x00ffffff; // GDI text clears alpha.
+            RECT image{210,100,220,110};
+            finish_glass_content(pixels.data(),material,width,height,std::span<const RECT>(&image,1));
+            check(pixels[75*width+30]==0xffffffff,"foreground text regains opaque alpha");
+            check(pixels[76*width+30]==material[76*width+30],"unpainted material retains original alpha");
+            check((pixels[100*width+210]>>24)==255,"image matching tint is still opaque");
+            draw_glass_material(pixels.data(),width,height,96,false,80,false,-1,180);
+            check((pixels[75*width+30]>>24)==255,"unavailable blur uses solid material fallback");
+        }
+        Gdiplus::GdiplusShutdown(token);
         auto custom=Config::parse(R"({"appearance":{"opacity":95,"blur":false}})");
         check(custom.opacity==95&&!custom.blur,"custom appearance settings parsed");
         check(Config::parse(R"({"appearance":{"opacity":100}})").blur,"partial settings retain defaults");

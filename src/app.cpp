@@ -5,6 +5,7 @@
 #include "editing.h"
 #include "version.h"
 #include "appearance.h"
+#include "glass.h"
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -150,7 +151,7 @@ void App::capture() {
 }
 void App::fonts() {
     if(font_) DeleteObject(font_); if(small_font_) DeleteObject(small_font_); if(emoji_font_) DeleteObject(emoji_font_);
-    const auto face=config_.theme==ThemeStyle::Windows95&&!colors_.high_contrast?L"MS Sans Serif":L"Segoe UI";
+    const auto face=L"Segoe UI";
     font_=CreateFontW(-px(17),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,face);
     small_font_=CreateFontW(-px(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,face);
     emoji_font_=CreateFontW(-px(28),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI Emoji");
@@ -163,23 +164,24 @@ void App::position() {
     SetWindowPos(hwnd_,HWND_TOPMOST,monitor.rcWork.left+(monitor.rcWork.right-monitor.rcWork.left-w)/2,
         monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-h)/3,w,h,SWP_NOACTIVATE);
     MoveWindow(edit_,px(24),px(21),w-px(48),px(32),TRUE);
+    if(config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast) {
+        auto region=CreateRoundRectRgn(0,0,w+1,h+1,px(56),px(56));
+        if(region&&!SetWindowRgn(hwnd_,region,TRUE)) DeleteObject(region);
+    } else SetWindowRgn(hwnd_,nullptr,TRUE);
 }
 void App::apply_theme() {
     colors_=resolve_theme(system_theme(),config_.color_mode,config_.theme);
     fonts();
-    const bool classic=config_.theme==ThemeStyle::Windows95&&!colors_.high_contrast;
-    const int corner=classic?DWMWCP_DONOTROUND:DWMWCP_ROUND;
+    const int corner=DWMWCP_ROUND;
     DwmSetWindowAttribute(hwnd_,DWMWA_WINDOW_CORNER_PREFERENCE,&corner,sizeof(corner));
-    BOOL dark=colors_.dark;
-    DwmSetWindowAttribute(hwnd_,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
-    const bool glass=(config_.theme==ThemeStyle::LiquidGlass||config_.theme==ThemeStyle::Windows7)&&!colors_.high_contrast;
+    const bool glass=config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast;
     try {
-        // The compositor supplies the blurred desktop; alpha is applied to the
-        // material alone in paint(), keeping text and previews fully opaque.
-        apply_appearance(hwnd_,glass||classic?100:config_.opacity,glass||classic?false:config_.blur,colors_.high_contrast);
-        glass_backdrop_=apply_glass_backdrop(hwnd_,glass&&config_.blur,colors_.dark);
+        apply_glass_backdrop(hwnd_,false,colors_.dark);
+        apply_appearance(hwnd_,glass?100:config_.opacity,glass?false:config_.blur,colors_.high_contrast);
+        glass_backdrop_=glass&&apply_glass_backdrop(hwnd_,config_.blur,colors_.dark);
     }
     catch(const std::exception& e) { report(wide(e.what())); }
+    position();
     RedrawWindow(hwnd_,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
 }
 void App::toggle() {
@@ -305,42 +307,23 @@ void App::paint() {
     if(!paint_dc_||!paint_surface_||paint_size_.cx!=bounds.right||paint_size_.cy!=bounds.bottom) {
         fill(dc,bounds,background); EndPaint(hwnd_,&ps); return;
     }
-    HDC buffer=paint_dc_; fill(buffer,bounds,background);
-    if(!colors_.high_contrast&&config_.theme==ThemeStyle::LiquidGlass) {
-        // A soft specular wash and inset rim give the frosted surface depth.
-        for(int y=0;y<px(76);++y) {
-            const int amount=MulDiv(px(76)-y,colors_.dark?14:65,px(76));
-            auto shine=[&](BYTE c) { return c+(255-c)*amount/100; };
-            fill(buffer,{0,y,bounds.right,y+1},RGB(shine(GetRValue(background)),shine(GetGValue(background)),shine(GetBValue(background))));
-        }
-        auto pen=CreatePen(PS_SOLID,px(1),colors_.dark?RGB(104,128,155):RGB(255,255,255));
-        auto oldpen=SelectObject(buffer,pen); auto oldbrush=SelectObject(buffer,GetStockObject(NULL_BRUSH));
-        RoundRect(buffer,px(2),px(2),bounds.right-px(2),bounds.bottom-px(2),px(22),px(22));
-        SelectObject(buffer,oldbrush); SelectObject(buffer,oldpen); DeleteObject(pen);
-    } else if(!colors_.high_contrast&&config_.theme==ThemeStyle::Windows7) {
-        Gdiplus::Graphics g(buffer);
-        Gdiplus::LinearGradientBrush header(Gdiplus::Point(0,0),Gdiplus::Point(0,px(72)),
-            colors_.dark?Gdiplus::Color(255,88,119,151):Gdiplus::Color(255,242,250,255),
-            colors_.dark?Gdiplus::Color(255,36,60,88):Gdiplus::Color(255,153,194,228));
-        g.FillRectangle(&header,0,0,static_cast<INT>(bounds.right),px(72));
-        auto pen=CreatePen(PS_SOLID,1,colors_.dark?RGB(119,153,184):RGB(255,255,255));
-        auto oldpen=SelectObject(buffer,pen); auto oldbrush=SelectObject(buffer,GetStockObject(NULL_BRUSH));
-        RoundRect(buffer,px(2),px(2),bounds.right-px(2),bounds.bottom-px(2),px(8),px(8));
-        SelectObject(buffer,oldbrush); SelectObject(buffer,oldpen); DeleteObject(pen);
-        RECT search{px(18),px(15),bounds.right-px(18),px(59)};
-        DrawEdge(buffer,&search,EDGE_SUNKEN,BF_RECT);
-    } else if(!colors_.high_contrast&&config_.theme==ThemeStyle::Windows95) {
-        RECT frame=bounds; DrawEdge(buffer,&frame,EDGE_RAISED,BF_RECT);
-        RECT search{px(18),px(15),bounds.right-px(18),px(59)};
-        DrawEdge(buffer,&search,EDGE_SUNKEN,BF_RECT);
-        fill(buffer,{px(4),bounds.bottom-px(49),bounds.right-px(4),bounds.bottom-px(46)},colors_.border);
-    }
-    // Remember the material before drawing content, so GDI text, icons, and
-    // images regain opaque alpha instead of fading with the glass surface.
+    HDC buffer=paint_dc_;
+    const bool glass=config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast;
+    const int split=bounds.right*3/5;
     std::vector<DWORD> material;
-    if(glass_backdrop_) { GdiFlush(); material.assign(paint_pixels_,paint_pixels_+static_cast<size_t>(bounds.right)*bounds.bottom); }
-    int split=bounds.right*3/5; fill(buffer,{px(16),px(70),bounds.right-px(16),px(71)},colors_.border);
-    fill(buffer,{split,px(84),split+1,bounds.bottom-px(48)},colors_.border);
+    std::vector<RECT> opaque_images;
+    if(glass) {
+        GdiFlush();
+        const int selection_y=shown_.rows().empty()?-1:px(82)+(selected_-first_)*px(58);
+        draw_glass_material(paint_pixels_,bounds.right,bounds.bottom,dpi_,colors_.dark,
+            config_.opacity,glass_backdrop_,selection_y,split);
+        material.assign(paint_pixels_,paint_pixels_+static_cast<size_t>(bounds.right)*bounds.bottom);
+        prepare_glass_content(paint_pixels_,material);
+    } else {
+        fill(buffer,bounds,background);
+        fill(buffer,{px(16),px(70),bounds.right-px(16),px(71)},colors_.border);
+        fill(buffer,{split,px(84),split+1,bounds.bottom-px(48)},colors_.border);
+    }
     int rows=std::max(1,static_cast<int>((bounds.bottom-px(110))/px(58)));
     {
     Gdiplus::Graphics graphics(buffer);
@@ -349,7 +332,9 @@ void App::paint() {
         auto b=it->second; double scale=std::min(static_cast<double>(target.right-target.left)/b->GetWidth(),static_cast<double>(target.bottom-target.top)/b->GetHeight());
         int w=static_cast<int>(b->GetWidth()*scale),h=static_cast<int>(b->GetHeight()*scale);
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        graphics.DrawImage(b.get(),target.left+(target.right-target.left-w)/2,target.top+(target.bottom-target.top-h)/2,w,h);
+        int x=target.left+(target.right-target.left-w)/2,y=target.top+(target.bottom-target.top-h)/2;
+        graphics.DrawImage(b.get(),x,y,w,h);
+        if(glass) opaque_images.push_back({x,y,x+w,y+h});
     };
     for(int row=0;row<rows;++row) {
         int idx=first_+row; if(idx>=static_cast<int>(shown_.rows().size())) break;
@@ -357,23 +342,7 @@ void App::paint() {
         const bool selected=idx==selected_;
         const auto row_text=selected?colors_.selection_text:foreground;
         const auto row_detail=selected?colors_.selection_text:muted;
-        if(selected) {
-            RECT row_bounds{px(12),y,split-px(12),y+px(55)};
-            if((config_.theme==ThemeStyle::LiquidGlass||config_.theme==ThemeStyle::Windows7)&&!colors_.high_contrast) {
-                auto brush=CreateSolidBrush(colors_.selection); auto oldbrush=SelectObject(buffer,brush);
-                auto pen=CreatePen(PS_SOLID,1,colors_.border); auto oldpen=SelectObject(buffer,pen);
-                RoundRect(buffer,row_bounds.left,row_bounds.top,row_bounds.right,row_bounds.bottom,px(16),px(16));
-                SelectObject(buffer,oldpen); SelectObject(buffer,oldbrush); DeleteObject(pen); DeleteObject(brush);
-                Gdiplus::Graphics g(buffer); g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-                const auto color=colors_.selection;
-                Gdiplus::LinearGradientBrush gloss(Gdiplus::Point(0,y+px(2)),Gdiplus::Point(0,y+px(52)),
-                    Gdiplus::Color(colors_.dark?65:160,255,255,255),Gdiplus::Color(0,GetRValue(color),GetGValue(color),GetBValue(color)));
-                g.FillRectangle(&gloss,px(19),y+px(2),split-px(38),px(50));
-            } else {
-                fill(buffer,row_bounds,colors_.selection);
-                if(config_.theme==ThemeStyle::Windows95&&!colors_.high_contrast) { InflateRect(&row_bounds,-px(3),-px(3)); DrawFocusRect(buffer,&row_bounds); }
-            }
-        }
+        if(selected&&!glass) fill(buffer,{px(12),y,split-px(12),y+px(55)},colors_.selection);
         int left=px(28);
         if(item.kind==Kind::App) { image(item,{left,y+px(11),left+px(32),y+px(43)}); left+=px(44); }
         if(item.kind==Kind::Image) { image(item,{left,y+px(5),left+px(42),y+px(47)}); left+=px(54); }
@@ -403,26 +372,53 @@ void App::paint() {
     }
     text(buffer,shown_.status,{px(24),bounds.bottom-px(40),split,bounds.bottom-px(15)},muted,small_font_);
     text(buffer,L"↑ ↓ navigate   Enter select   Esc close",{split+px(16),bounds.bottom-px(40),bounds.right-px(16),bounds.bottom-px(15)},muted,small_font_);
-    if(glass_backdrop_) {
+    if(glass) {
         GdiFlush();
-        const auto count=static_cast<size_t>(bounds.right)*bounds.bottom;
-        // Glass is predominantly transparent, with denser material at the rim.
-        const unsigned tint=std::clamp(config_.opacity*3/5,12u,60u);
-        for(size_t i=0;i<count;++i) {
-            DWORD pixel=paint_pixels_[i]&0x00ffffff;
-            const int x=static_cast<int>(i%bounds.right),y=static_cast<int>(i/bounds.right);
-            const bool rim=x<px(4)||x>=bounds.right-px(4)||y<px(4)||y>=bounds.bottom-px(4);
-            unsigned alpha=pixel==(material[i]&0x00ffffff)?(rim?220:tint*255/100):255;
-            unsigned r=(pixel>>16)&255,g=(pixel>>8)&255,b=pixel&255;
-            paint_pixels_[i]=(alpha<<24)|((r*alpha/255)<<16)|((g*alpha/255)<<8)|(b*alpha/255);
-        }
+        finish_glass_content(paint_pixels_,material,bounds.right,bounds.bottom,opaque_images);
     }
     BitBlt(dc,0,0,bounds.right,bounds.bottom,buffer,0,0,SRCCOPY);
-    if(glass_backdrop_) GdiFlush();
+    if(glass) GdiFlush();
     EndPaint(hwnd_,&ps);
+}
+void App::paint_glass_edit(HWND edit) {
+    PAINTSTRUCT ps{}; HDC dc=BeginPaint(edit,&ps);
+    RECT bounds{}; GetClientRect(edit,&bounds);
+    const int w=bounds.right,h=bounds.bottom;
+    BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=w; info.bmiHeader.biHeight=-h;
+    info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32;
+    void* pixels=nullptr;
+    auto bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
+    auto buffer=bitmap?CreateCompatibleDC(dc):nullptr;
+    if(buffer) {
+        auto old=SelectObject(buffer,bitmap);
+        fill(buffer,bounds,colors_.background);
+        // Keep native EDIT layout, selection, cue, scrolling, and IME behavior.
+        DefSubclassProc(edit,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(buffer),PRF_CLIENT|PRF_ERASEBKGND);
+        GdiFlush();
+        POINT origin{}; MapWindowPoints(edit,hwnd_,&origin,1);
+        const DWORD blank=(GetRValue(colors_.background)<<16)|(GetGValue(colors_.background)<<8)|GetBValue(colors_.background);
+        auto output=static_cast<DWORD*>(pixels);
+        for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
+            auto& pixel=output[static_cast<size_t>(y)*w+x];
+            const int parent_x=origin.x+x,parent_y=origin.y+y;
+            if((pixel&0x00ffffff)==blank&&paint_pixels_&&parent_x>=0&&parent_y>=0&&
+                parent_x<paint_size_.cx&&parent_y<paint_size_.cy)
+                pixel=paint_pixels_[static_cast<size_t>(parent_y)*paint_size_.cx+parent_x];
+            else pixel|=0xff000000;
+        }
+        BitBlt(dc,0,0,w,h,buffer,0,0,SRCCOPY); GdiFlush();
+        SelectObject(buffer,old); DeleteDC(buffer);
+    }
+    if(bitmap) DeleteObject(bitmap);
+    EndPaint(edit,&ps);
 }
 LRESULT CALLBACK App::edit_proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PTR data) {
     auto* self=reinterpret_cast<App*>(data);
+    if(self->config_.theme==ThemeStyle::LiquidGlass&&!self->colors_.high_contrast) {
+        if(msg==WM_PAINT) { self->paint_glass_edit(hwnd); return 0; }
+        if(msg==WM_ERASEBKGND) return 1;
+    }
     if(msg==WM_KEYDOWN) {
         switch(wp) {
         case VK_BACK:

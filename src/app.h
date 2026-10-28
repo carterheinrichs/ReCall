@@ -77,6 +77,7 @@ class App {
     void refresh_history();
     void capture();
     void paint();
+    void paint_glass_edit(HWND edit);
     void select(int delta);
     void execute();
     void finish_clipboard();

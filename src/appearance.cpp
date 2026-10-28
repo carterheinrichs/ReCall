@@ -26,11 +26,16 @@ bool apply_glass_backdrop(HWND window,bool enabled,bool dark) {
     enabled=enabled&&transparency&&composition;
     BOOL use_dark=dark;
     DwmSetWindowAttribute(window,DWMWA_USE_IMMERSIVE_DARK_MODE,&use_dark,sizeof(use_dark));
-    const int type=enabled?DWMSBT_TRANSIENTWINDOW:DWMSBT_NONE;
-    const bool supported=SUCCEEDED(DwmSetWindowAttribute(window,DWMWA_SYSTEMBACKDROP_TYPE,&type,sizeof(type)));
-    MARGINS margins=enabled&&supported?MARGINS{-1,-1,-1,-1}:MARGINS{};
+    // LiquidGlass2 uses a lightly tinted blur brush, not the system's dense
+    // transient acrylic material. Use untinted blur-behind and draw the tint
+    // ourselves. Win32's native blur radius remains compositor-controlled.
+    const int type=DWMSBT_NONE;
+    DwmSetWindowAttribute(window,DWMWA_SYSTEMBACKDROP_TYPE,&type,sizeof(type));
+    const bool blurred=set_blur(window,enabled);
+    MARGINS margins=blurred?MARGINS{-1,-1,-1,-1}:MARGINS{};
     const bool extended=SUCCEEDED(DwmExtendFrameIntoClientArea(window,&margins));
-    return enabled&&supported&&extended;
+    if(!extended&&blurred) set_blur(window,false);
+    return blurred&&extended;
 }
 AppearanceResult apply_appearance(HWND window,unsigned opacity,bool blur,bool high_contrast) {
     if(opacity<1||opacity>100) throw std::runtime_error("Window opacity must be from 1 to 100 percent");
