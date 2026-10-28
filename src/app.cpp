@@ -37,7 +37,7 @@ App::~App() {
     index_worker_.request_stop(); index_cv_.notify_all();
     queue_cv_.notify_all(); if(worker_.joinable()) worker_.join();
     if(index_worker_.joinable()) index_worker_.join();
-    previews_.reset(); icons_.reset();
+    previews_.reset(); icons_.reset(); backdrop_.reset();
     if(hwnd_) { tray(false); if(IsWindow(hwnd_)) DestroyWindow(hwnd_); }
     if(font_) DeleteObject(font_); if(small_font_) DeleteObject(small_font_); if(emoji_font_) DeleteObject(emoji_font_);
     if(paint_dc_) { SelectObject(paint_dc_,paint_original_); DeleteObject(paint_surface_); DeleteDC(paint_dc_); }
@@ -165,6 +165,7 @@ void App::position() {
         monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-h)/3,w,h,SWP_NOACTIVATE);
     MoveWindow(edit_,px(24),px(21),w-px(48),px(32),TRUE);
     apply_window_shape(hwnd_,config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast,w,h,dpi_);
+    if(backdrop_) backdrop_->sync(hwnd_,dpi_,IsWindowVisible(hwnd_)!=FALSE);
 }
 void App::apply_theme() {
     colors_=resolve_theme(system_theme(),config_.color_mode,config_.theme);
@@ -173,7 +174,9 @@ void App::apply_theme() {
     try {
         apply_glass_backdrop(hwnd_,false,colors_.dark);
         apply_appearance(hwnd_,config_.opacity,glass?false:config_.blur,colors_.high_contrast);
-        glass_backdrop_=glass&&apply_glass_backdrop(hwnd_,config_.blur,colors_.dark);
+        glass_backdrop_=false;
+        if(glass&&!backdrop_) backdrop_=std::make_unique<GlassBackdrop>();
+        if(backdrop_) glass_backdrop_=backdrop_->configure(glass&&config_.blur);
     }
     catch(const std::exception& e) { report(wide(e.what())); }
     position();
@@ -524,6 +527,9 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
         if(LOWORD(lp)==WM_CONTEXTMENU||LOWORD(lp)==WM_RBUTTONUP) menu();
         else if(LOWORD(lp)==NIN_SELECT||LOWORD(lp)==NIN_KEYSELECT) toggle(); return 0;
     case WM_ACTIVATE: if(LOWORD(wp)==WA_INACTIVE) ShowWindow(hwnd_,SW_HIDE); return 0;
+    case WM_SHOWWINDOW:
+        if(backdrop_) backdrop_->sync(hwnd_,dpi_,wp!=0);
+        break;
     case WM_TIMER: if(wp==paste_timer) paste(); else if(wp==clipboard_timer) finish_clipboard(); return 0;
     case WM_DPICHANGED: dpi_=HIWORD(wp); fonts(); position(); request_previews(); return 0;
     case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_SYSCOLORCHANGE: apply_theme(); return 0;

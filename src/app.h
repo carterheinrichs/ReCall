@@ -5,6 +5,7 @@
 #include "previews.h"
 #include "clipboard.h"
 #include "emoji_renderer.h"
+#include "backdrop.h"
 #include <gdiplus.h>
 #include <atomic>
 #include <condition_variable>
@@ -37,6 +38,7 @@ class App {
     SIZE paint_size_{};
     DWORD* paint_pixels_{};
     bool glass_backdrop_{};
+    std::unique_ptr<GlassBackdrop> backdrop_;
     HHOOK hook_{};
     bool registered_{}, hook_down_{}, listener_{}, quitting_{};
     UINT taskbar_created_{};
