@@ -8,13 +8,23 @@ namespace {
 struct AccentPolicy { int state; DWORD flags,color,animation; };
 struct CompositionData { int attribute; void* data; SIZE_T size; };
 using SetCompositionAttribute=BOOL(WINAPI*)(HWND,CompositionData*);
-bool set_blur(HWND window,bool enabled) {
+bool set_blur(HWND window,bool enabled,bool strong=false,bool dark=false) {
     auto user32=GetModuleHandleW(L"user32.dll");
     auto set=user32?reinterpret_cast<SetCompositionAttribute>(GetProcAddress(user32,"SetWindowCompositionAttribute")):nullptr;
     if(!set) return false;
-    constexpr int accent_policy_attribute=19,accent_disabled=0,accent_blur_behind=3;
+    constexpr int accent_policy_attribute=19,accent_disabled=0,accent_blur_behind=3,accent_acrylic_blur=4;
     AccentPolicy policy{enabled?accent_blur_behind:accent_disabled,0,0,0};
     CompositionData data{accent_policy_attribute,&policy,sizeof(policy)};
+    if(enabled&&strong) {
+        // Acrylic provides the stronger diffusion missing from basic blur.
+        // Its tint requires nonzero alpha; keep it minimal so our existing
+        // glass palette and independent window opacity still control the look.
+        policy.state=accent_acrylic_blur;
+        policy.color=dark?0x01000000u:0x01ffffffu; // ABGR
+        if(set(window,&data)) return true;
+        // Composition effects are optional on some Windows/session setups.
+        policy.state=accent_blur_behind; policy.color=0;
+    }
     return set(window,&data)!=FALSE&&enabled;
 }
 }
@@ -26,12 +36,11 @@ bool apply_glass_backdrop(HWND window,bool enabled,bool dark) {
     enabled=enabled&&transparency&&composition;
     BOOL use_dark=dark;
     DwmSetWindowAttribute(window,DWMWA_USE_IMMERSIVE_DARK_MODE,&use_dark,sizeof(use_dark));
-    // LiquidGlass2 uses a lightly tinted blur brush, not the system's dense
-    // transient acrylic material. Use untinted blur-behind and draw the tint
-    // ourselves. Win32's native blur radius remains compositor-controlled.
+    // Use acrylic diffusion with minimal native tint for a stronger blur.
+    // Keep the glass tint in our renderer and opacity on the window itself.
     const int type=DWMSBT_NONE;
     DwmSetWindowAttribute(window,DWMWA_SYSTEMBACKDROP_TYPE,&type,sizeof(type));
-    const bool blurred=set_blur(window,enabled);
+    const bool blurred=set_blur(window,enabled,true,dark);
     // Keep the native frame out of the client area. Extending it behind our
     // larger rounded outline leaves the system's smaller corners exposed.
     MARGINS margins{};
