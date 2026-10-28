@@ -18,6 +18,20 @@ bool set_blur(HWND window,bool enabled) {
     return set(window,&data)!=FALSE&&enabled;
 }
 }
+bool apply_glass_backdrop(HWND window,bool enabled,bool dark) {
+    DWORD transparency=1,size=sizeof(transparency);
+    RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"EnableTransparency",RRF_RT_REG_DWORD,nullptr,&transparency,&size);
+    BOOL composition=FALSE; DwmIsCompositionEnabled(&composition);
+    enabled=enabled&&transparency&&composition;
+    BOOL use_dark=dark;
+    DwmSetWindowAttribute(window,DWMWA_USE_IMMERSIVE_DARK_MODE,&use_dark,sizeof(use_dark));
+    const int type=enabled?DWMSBT_TRANSIENTWINDOW:DWMSBT_NONE;
+    const bool supported=SUCCEEDED(DwmSetWindowAttribute(window,DWMWA_SYSTEMBACKDROP_TYPE,&type,sizeof(type)));
+    MARGINS margins=enabled&&supported?MARGINS{-1,-1,-1,-1}:MARGINS{};
+    const bool extended=SUCCEEDED(DwmExtendFrameIntoClientArea(window,&margins));
+    return enabled&&supported&&extended;
+}
 AppearanceResult apply_appearance(HWND window,unsigned opacity,bool blur,bool high_contrast) {
     if(opacity<1||opacity>100) throw std::runtime_error("Window opacity must be from 1 to 100 percent");
     if(high_contrast) { opacity=100; blur=false; }

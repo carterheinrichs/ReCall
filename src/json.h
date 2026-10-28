@@ -16,35 +16,6 @@ struct Json {
     const Json* get(std::string_view key) const {
         auto i = object().find(key); return i == object().end() ? nullptr : &i->second;
     }
-    std::string dump() const {
-        auto quote=[](const std::string& text) {
-            std::string result="\"";
-            constexpr char hex[]="0123456789abcdef";
-            for(unsigned char c:text) {
-                if(c=='"'||c=='\\') { result+='\\'; result+=static_cast<char>(c); }
-                else if(c<32) { result+="\\u00"; result+=hex[c>>4]; result+=hex[c&15]; }
-                else result+=static_cast<char>(c);
-            }
-            return result+'"';
-        };
-        if(std::holds_alternative<std::nullptr_t>(value)) return "null";
-        if(auto v=std::get_if<bool>(&value)) return *v?"true":"false";
-        if(auto v=std::get_if<double>(&value)) {
-            char buffer[64]; auto result=std::to_chars(buffer,buffer+sizeof(buffer),*v);
-            if(result.ec!=std::errc{}) throw std::runtime_error("Cannot serialize JSON number");
-            return std::string(buffer,result.ptr);
-        }
-        if(auto v=std::get_if<std::string>(&value)) return quote(*v);
-        std::string result;
-        if(auto v=std::get_if<Object>(&value)) {
-            result="{";
-            for(const auto& [key,item]:*v) { if(result.size()>1) result+=","; result+="\n"+quote(key)+": "+item.dump(); }
-            return result+"\n}";
-        }
-        result="[";
-        for(const auto& item:array()) { if(result.size()>1) result+=","; result+=item.dump(); }
-        return result+"]";
-    }
     static Json parse(std::string_view input) {
         struct Parser {
             std::string_view s; size_t pos{}; unsigned depth{};

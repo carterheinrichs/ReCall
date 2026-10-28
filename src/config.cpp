@@ -71,8 +71,9 @@ Config Config::parse(std::string_view text) {
             auto value=v->string();
             if(value=="default") c.theme=ThemeStyle::Default;
             else if(value=="liquid_glass") c.theme=ThemeStyle::LiquidGlass;
-            else if(value=="classic_windows") c.theme=ThemeStyle::ClassicWindows;
-            else throw std::runtime_error("appearance.theme must be default, liquid_glass, or classic_windows");
+            else if(value=="windows_95"||value=="classic_windows") c.theme=ThemeStyle::Windows95;
+            else if(value=="windows_7") c.theme=ThemeStyle::Windows7;
+            else throw std::runtime_error("appearance.theme must be default, liquid_glass, windows_95, or windows_7");
         }
         if(auto v=appearance->get("opacity")) {
             const auto* x=std::get_if<double>(&v->value);
@@ -87,27 +88,6 @@ Config Config::parse(std::string_view text) {
         }
     }
     return c;
-}
-void Config::save_appearance() const {
-    auto path=state/L"config.json", temporary=state/L"config.json.tmp";
-    std::ifstream in(path,std::ios::binary);
-    if(!in) throw std::runtime_error("Cannot read config.json");
-    std::string contents((std::istreambuf_iterator<char>(in)),{});
-    in.close();
-    auto root=Json::parse(contents);
-    auto& object=std::get<Json::Object>(root.value);
-    auto entry=object.try_emplace("appearance",Json{Json::Object{}}).first;
-    auto& appearance=std::get<Json::Object>(entry->second.value);
-    appearance["mode"].value=std::string(color_mode==ColorMode::Light?"light":color_mode==ColorMode::Dark?"dark":"system");
-    appearance["theme"].value=std::string(theme==ThemeStyle::LiquidGlass?"liquid_glass":theme==ThemeStyle::ClassicWindows?"classic_windows":"default");
-    appearance["opacity"].value=static_cast<double>(opacity);
-    appearance["blur"].value=blur;
-    std::ofstream out(temporary,std::ios::binary|std::ios::trunc);
-    out << root.dump() << '\n'; out.close();
-    if(!out) { DeleteFileW(temporary.c_str()); throw std::runtime_error("Cannot save appearance settings"); }
-    if(!MoveFileExW(temporary.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileW(temporary.c_str()); throw std::runtime_error("Cannot replace config.json");
-    }
 }
 
 }

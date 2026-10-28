@@ -1,8 +1,6 @@
 #include "appearance.h"
 #include "config.h"
 #include "theme.h"
-#include "json.h"
-#include <fstream>
 #include <iostream>
 
 using namespace recall;
@@ -17,7 +15,7 @@ int main() {
         auto unchanged=resolve_theme(baseline,ColorMode::System,ThemeStyle::Default);
         check(unchanged.background==baseline.background&&unchanged.selection==baseline.selection&&unchanged.border==baseline.border,"default palette unchanged");
         baseline.high_contrast=false;
-        for(auto style:{ThemeStyle::Default,ThemeStyle::LiquidGlass,ThemeStyle::ClassicWindows}) {
+        for(auto style:{ThemeStyle::Default,ThemeStyle::LiquidGlass,ThemeStyle::Windows95,ThemeStyle::Windows7}) {
             auto light=resolve_theme(baseline,ColorMode::Light,style),dark=resolve_theme(baseline,ColorMode::Dark,style);
             check(!light.dark&&dark.dark&&light.background!=dark.background,"each theme supports explicit light and dark");
             baseline.high_contrast=true;
@@ -27,19 +25,12 @@ int main() {
         }
         check(Config::parse(R"({"appearance":{"theme":"liquid_glass","mode":"dark"}})").theme==ThemeStyle::LiquidGlass,"glass setting parsed");
         auto classic=Config::parse(R"({"appearance":{"theme":"classic_windows","mode":"light"}})");
-        check(classic.theme==ThemeStyle::ClassicWindows&&classic.color_mode==ColorMode::Light,"classic and mode settings parsed");
-        auto directory=fs::temp_directory_path()/(L"ReCall-theme-test-"+std::to_wstring(GetCurrentProcessId()));
-        fs::create_directories(directory);
-        try {
-            { std::ofstream out(directory/L"config.json"); out << R"({"hotkey":{"key":"F2"},"custom":{"quoted":"a\\b\n\"c","array":[null,2,true]},"appearance":{"future":true}})"; }
-            classic.state=directory; classic.save_appearance();
-            std::ifstream in(directory/L"config.json"); std::string saved((std::istreambuf_iterator<char>(in)),{});
-            auto roundtrip=Config::parse(saved); auto json=Json::parse(saved);
-            check(roundtrip.theme==classic.theme&&roundtrip.color_mode==classic.color_mode&&roundtrip.key==VK_F2,"saved appearance round trips and preserves hotkey");
-            check(json.get("custom")->get("array")->array().size()==3&&json.get("appearance")->get("future"),"saving preserves unknown configuration fields");
-            in.close();
-        } catch(...) { fs::remove_all(directory); throw; }
-        fs::remove_all(directory);
+        check(classic.theme==ThemeStyle::Windows95&&classic.color_mode==ColorMode::Light,"classic and mode settings parsed");
+        check(Config::parse(R"({"appearance":{"theme":"windows_95"}})").theme==ThemeStyle::Windows95,"Windows 95 setting parsed");
+        check(Config::parse(R"({"appearance":{"theme":"windows_7"}})").theme==ThemeStyle::Windows7,"Windows 7 setting parsed");
+        auto win95=resolve_theme(baseline,ColorMode::Light,ThemeStyle::Windows95);
+        auto win7=resolve_theme(baseline,ColorMode::Light,ThemeStyle::Windows7);
+        check(win95.background!=win7.background&&win95.selection!=win7.selection,"95 and 7 have distinct palettes");
         auto custom=Config::parse(R"({"appearance":{"opacity":95,"blur":false}})");
         check(custom.opacity==95&&!custom.blur,"custom appearance settings parsed");
         check(Config::parse(R"({"appearance":{"opacity":100}})").blur,"partial settings retain defaults");
@@ -53,6 +44,9 @@ int main() {
         HWND window=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"ReCall appearance test",WS_POPUP,0,0,400,300,nullptr,nullptr,nullptr,nullptr);
         if(!window) throw std::runtime_error("Cannot create test window");
         try {
+            apply_glass_backdrop(window,true,false);
+            check(!(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_LAYERED),"glass backdrop does not fade foreground with layered alpha");
+            check(!apply_glass_backdrop(window,false,false),"glass backdrop can be reset for default theme");
             auto result=apply_appearance(window,80,false);
             BYTE alpha{}; DWORD flags{}; COLORREF key{};
             check(GetLayeredWindowAttributes(window,&key,&alpha,&flags)&&alpha==204&&(flags&LWA_ALPHA),"80 percent native window alpha applied");

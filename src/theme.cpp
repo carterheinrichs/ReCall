@@ -53,15 +53,21 @@ ThemeColors resolve_theme(ThemeColors colors,ColorMode mode,ThemeStyle style) {
         colors.foreground=colors.dark?RGB(255,255,255):RGB(0,0,0);
     }
     if(style==ThemeStyle::LiquidGlass) {
-        colors.background=colors.dark?RGB(25,34,48):RGB(230,240,250);
-        colors.foreground=colors.dark?RGB(242,247,255):RGB(20,37,58);
-        colors.selection=colors.dark?RGB(57,91,132):RGB(192,217,245);
+        colors.background=colors.dark?RGB(34,34,38):RGB(246,246,249);
+        colors.foreground=colors.dark?RGB(250,250,252):RGB(24,24,28);
+        colors.selection=colors.dark?RGB(74,74,82):RGB(231,234,240);
         colors.selection_text=colors.foreground;
-    } else if(style==ThemeStyle::ClassicWindows) {
-        colors.background=colors.dark?RGB(45,48,52):RGB(212,208,200);
+    } else if(style==ThemeStyle::Windows95) {
+        colors.background=colors.dark?RGB(45,48,52):RGB(192,192,192);
         colors.foreground=colors.dark?RGB(245,245,245):RGB(0,0,0);
-        colors.selection=colors.dark?RGB(30,72,120):RGB(10,36,106);
+        colors.selection=colors.dark?RGB(30,72,120):RGB(0,0,128);
         colors.selection_text=RGB(255,255,255);
+    }
+    if(style==ThemeStyle::Windows7) {
+        colors.background=colors.dark?RGB(30,43,58):RGB(225,239,251);
+        colors.foreground=colors.dark?RGB(245,249,255):RGB(20,34,50);
+        colors.selection=colors.dark?RGB(49,84,118):RGB(193,222,247);
+        colors.selection_text=colors.foreground;
     }
     colors.muted=blend(colors.background,colors.foreground,65);
     colors.border=blend(colors.background,colors.foreground,20);

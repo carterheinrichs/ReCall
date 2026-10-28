@@ -2,7 +2,7 @@
 #include "common.h"
 namespace recall {
 enum class ColorMode { System, Light, Dark };
-enum class ThemeStyle { Default, LiquidGlass, ClassicWindows };
+enum class ThemeStyle { Default, LiquidGlass, Windows95, Windows7 };
 struct Config {
     UINT modifiers = MOD_WIN;
     UINT key = VK_SPACE;
@@ -13,7 +13,6 @@ struct Config {
     bool blur = true;
     ColorMode color_mode = ColorMode::System;
     ThemeStyle theme = ThemeStyle::Default;
-    void save_appearance() const;
     std::wstring clipboard_prefix = L">", emoji_prefix = L":";
     fs::path state;
     static Config load();

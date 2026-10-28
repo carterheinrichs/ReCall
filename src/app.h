@@ -35,6 +35,8 @@ class App {
     HBITMAP paint_surface_{};
     HGDIOBJ paint_original_{};
     SIZE paint_size_{};
+    DWORD* paint_pixels_{};
+    bool glass_backdrop_{};
     HHOOK hook_{};
     bool registered_{}, hook_down_{}, listener_{}, quitting_{};
     UINT taskbar_created_{};
