@@ -69,6 +69,27 @@ int main() {
             DeleteObject(font); DeleteDC(dc);
         }
         Gdiplus::GdiplusShutdown(token);
+        for(int dpi:{96,120,144,192}) {
+            const int width=MulDiv(900,dpi,96);
+            const auto field=glass_search_bounds(width,dpi);
+            for(int height:{MulDiv(17,dpi,96),MulDiv(21,dpi,96)}) {
+                const auto edit=glass_search_edit_bounds(width,dpi,height);
+                check(field.left+field.right==width&&edit.left+edit.right==width,"search field and input share the horizontal center at every DPI");
+                check(abs((edit.top-field.top)-(field.bottom-edit.bottom))<=1,"search input has equal top and bottom padding for the measured font");
+                check(edit.bottom-edit.top==height,"search input uses the font line height rather than a taller fixed control");
+            }
+        }
+        for(bool dark:{false,true}) {
+            std::vector<DWORD> pixels(81,dark?0x1a000000u:0x4c4c4c4cu);
+            const DWORD glyph=255;
+            blend_glass_text_mask(pixels.data(),9,9,&glyph,1,1,{4,4},dark?RGB(250,250,250):RGB(24,24,24),96);
+            const auto ink=pixels[4*9+4],outline=pixels[4*9+3];
+            // Composite white text over a white window, and dark text over a
+            // black window. Both need a visible opposing local edge.
+            const auto ink_red=(ink>>16)&255,edge_red=(outline>>16)&255;
+            check(dark?(ink_red>235&&edge_red+255-(outline>>24)<80):(ink_red<40&&edge_red>200),"text retains a high-contrast edge over the opposite background");
+            check(pixels[0]==(dark?0x1a000000u:0x4c4c4c4cu),"contrast treatment leaves surrounding glass untouched");
+        }
         auto custom=Config::parse(R"({"appearance":{"opacity":95,"blur":false}})");
         check(custom.opacity==95&&!custom.blur,"custom appearance settings parsed");
         check(Config::parse(R"({"appearance":{"opacity":100}})").blur,"partial settings retain defaults");

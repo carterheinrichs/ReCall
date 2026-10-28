@@ -19,6 +19,16 @@ DWORD opaque_color(DWORD pixel) {
     return 0xff000000|(channel(16)<<16)|(channel(8)<<8)|channel(0);
 }
 }
+RECT glass_search_bounds(int width,int dpi) {
+    return {MulDiv(24,dpi,96),MulDiv(18,dpi,96),width-MulDiv(24,dpi,96),MulDiv(62,dpi,96)};
+}
+RECT glass_search_edit_bounds(int width,int dpi,int line_height) {
+    auto bounds=glass_search_bounds(width,dpi);
+    const int padding=MulDiv(12,dpi,96);
+    line_height=std::clamp(line_height,1,static_cast<int>(bounds.bottom-bounds.top));
+    const int top=bounds.top+(bounds.bottom-bounds.top-line_height)/2;
+    return {bounds.left+padding,top,bounds.right-padding,top+line_height};
+}
 void draw_glass_material(DWORD* pixels,int width,int height,int dpi,bool dark,
     bool transparent,int selection_y,int split) {
     using namespace Gdiplus;
@@ -49,7 +59,9 @@ void draw_glass_material(DWORD* pixels,int width,int height,int dpi,bool dark,
         Pen pen(&border,std::max(.7f,px(1))); g.DrawPath(&pen,&path);
     };
     // Search field, selected row, and bottom tray are separate thin layers.
-    panel(RectF(px(24),px(18),width-px(48),px(44)),px(22),
+    const auto search=glass_search_bounds(width,dpi);
+    panel(RectF(static_cast<REAL>(search.left),static_cast<REAL>(search.top),
+        static_cast<REAL>(search.right-search.left),static_cast<REAL>(search.bottom-search.top)),px(22),
         dark?Color(31,0,0,0):Color(60,255,255,255));
     if(selection_y>=0&&selection_y<height-px(80))
         panel(RectF(px(12),static_cast<float>(selection_y),split-px(24),px(55)),px(20),
@@ -74,8 +86,41 @@ void finish_glass_content(DWORD* pixels,std::span<const DWORD> material,
             for(int x=std::max(0L,r.left);x<std::min(static_cast<LONG>(width),r.right);++x)
                 pixels[static_cast<size_t>(y)*width+x]|=0xff000000;
 }
+void blend_glass_text_mask(DWORD* pixels,int width,int height,const DWORD* mask,int w,int h,
+    POINT origin,COLORREF color,int dpi) {
+    auto coverage=[&](int x,int y)->unsigned {
+        if(x<0||y<0||x>=w||y>=h) return 0;
+        const auto value=mask[static_cast<size_t>(y)*w+x];
+        return std::max({value&255,(value>>8)&255,(value>>16)&255});
+    };
+    auto composite=[](DWORD& dst,COLORREF ink,unsigned a) {
+        auto blend=[&](unsigned channel,unsigned shift) { return (channel*a+((dst>>shift)&255)*(255-a)+127)/255; };
+        dst=((a+((dst>>24)*(255-a)+127)/255)<<24)|
+            (blend(GetRValue(ink),16)<<16)|(blend(GetGValue(ink),8)<<8)|blend(GetBValue(ink),0);
+    };
+    const bool light=GetRValue(color)*299+GetGValue(color)*587+GetBValue(color)*114>=128000;
+    const auto outline=light?RGB(0,0,0):RGB(255,255,255);
+    const int radius=std::max(1,MulDiv(1,dpi,96));
+    // A one-DIP opposing outline supplies local contrast on both white and
+    // dark windows without flattening or darkening the glass material itself.
+    for(int y=-radius;y<h+radius;++y) for(int x=-radius;x<w+radius;++x) {
+        const int xx=origin.x+x,yy=origin.y+y;
+        if(xx<0||yy<0||xx>=width||yy>=height) continue;
+        unsigned a=0;
+        for(int dy=-radius;dy<=radius;++dy) for(int dx=-radius;dx<=radius;++dx) {
+            const unsigned weight=abs(dx)+abs(dy)<=radius?255:180;
+            a=std::max(a,coverage(x+dx,y+dy)*weight/255);
+        }
+        if(a) composite(pixels[static_cast<size_t>(yy)*width+xx],outline,a*200/255);
+    }
+    for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
+        const int xx=origin.x+x,yy=origin.y+y;
+        if(xx<0||yy<0||xx>=width||yy>=height) continue;
+        if(const auto a=coverage(x,y)) composite(pixels[static_cast<size_t>(yy)*width+xx],color,a);
+    }
+}
 void draw_glass_text(DWORD* pixels,int width,int height,HDC compatible,const std::wstring& text,
-    RECT bounds,COLORREF color,HFONT font,UINT flags) {
+    RECT bounds,COLORREF color,HFONT font,UINT flags,int dpi) {
     const int w=bounds.right-bounds.left,h=bounds.bottom-bounds.top;
     if(text.empty()||w<=0||h<=0) return;
     BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
@@ -92,17 +137,7 @@ void draw_glass_text(DWORD* pixels,int width,int height,HDC compatible,const std
         RECT local{0,0,w,h};
         DrawTextW(dc,text.c_str(),static_cast<int>(text.size()),&local,flags|DT_NOPREFIX);
         GdiFlush();
-        for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
-            const int xx=bounds.left+x,yy=bounds.top+y;
-            if(xx<0||yy<0||xx>=width||yy>=height) continue;
-            const DWORD mask=coverage[static_cast<size_t>(y)*w+x];
-            const unsigned a=std::max({mask&255,(mask>>8)&255,(mask>>16)&255});
-            if(!a) continue;
-            auto& dst=pixels[static_cast<size_t>(yy)*width+xx];
-            auto blend=[&](unsigned channel,unsigned shift) { return (channel*a+((dst>>shift)&255)*(255-a)+127)/255; };
-            dst=((a+((dst>>24)*(255-a)+127)/255)<<24)|
-                (blend(GetRValue(color),16)<<16)|(blend(GetGValue(color),8)<<8)|blend(GetBValue(color),0);
-        }
+        blend_glass_text_mask(pixels,width,height,coverage,w,h,{bounds.left,bounds.top},color,dpi);
         SelectObject(dc,oldfont); SelectObject(dc,old); DeleteDC(dc);
     }
     if(bitmap) DeleteObject(bitmap);

@@ -59,6 +59,7 @@ ThemeColors resolve_theme(ThemeColors colors,ColorMode mode,ThemeStyle style) {
         colors.selection_text=colors.foreground;
     }
     colors.muted=blend(colors.background,colors.foreground,65);
+    if(style==ThemeStyle::LiquidGlass) colors.muted=colors.dark?RGB(232,232,236):RGB(48,48,52);
     colors.border=blend(colors.background,colors.foreground,20);
     return colors;
 }

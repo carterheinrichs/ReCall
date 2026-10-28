@@ -165,7 +165,17 @@ void App::position() {
     SetWindowPos(hwnd_,HWND_TOPMOST,monitor.rcWork.left+(monitor.rcWork.right-monitor.rcWork.left-w)/2,
         monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-h)/3,w,h,SWP_NOACTIVATE);
     const bool glass=config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast;
-    MoveWindow(edit_,px(glass?36:24),px(glass?24:21),w-px(glass?72:48),px(32),TRUE);
+    if(glass) {
+        int line_height=px(20);
+        if(auto dc=GetDC(hwnd_)) {
+            auto old=SelectObject(dc,font_); TEXTMETRICW metrics{};
+            if(GetTextMetricsW(dc,&metrics)) line_height=metrics.tmHeight;
+            SelectObject(dc,old); ReleaseDC(hwnd_,dc);
+        }
+        const auto bounds=glass_search_edit_bounds(w,dpi_,line_height);
+        SendMessageW(edit_,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);
+        MoveWindow(edit_,bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top,TRUE);
+    } else MoveWindow(edit_,px(24),px(21),w-px(48),px(32),TRUE);
     apply_window_shape(hwnd_,config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast,w,h,dpi_);
     if(backdrop_) backdrop_->sync(hwnd_,dpi_,IsWindowVisible(hwnd_)!=FALSE);
 }
@@ -394,7 +404,7 @@ void App::paint() {
             g.Flush(Gdiplus::FlushIntentionSync);
         }
         for(const auto& item:text_jobs) draw_glass_text(paint_pixels_,bounds.right,bounds.bottom,buffer,
-            item.string,item.bounds,item.color,item.font,item.flags);
+            item.string,item.bounds,item.color,item.font,item.flags,dpi_);
     }
     if(glass) {
         render_glass_edit();
@@ -423,6 +433,7 @@ void App::render_glass_edit() {
         POINT origin{}; MapWindowPoints(edit_,hwnd_,&origin,1);
         const DWORD blank=(GetRValue(colors_.background)<<16)|(GetGValue(colors_.background)<<8)|GetBValue(colors_.background);
         auto input=static_cast<DWORD*>(pixels);
+        std::vector<DWORD> glyphs(static_cast<size_t>(w)*h,0);
         for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
             const int parent_x=origin.x+x,parent_y=origin.y+y;
             if(parent_x<0||parent_y<0||parent_x>=paint_size_.cx||parent_y>=paint_size_.cy) continue;
@@ -434,23 +445,19 @@ void App::render_glass_edit() {
             if(std::max({r,g,b})-std::min({r,g,b})<=4&&foreground!=background&&
                 (r-background)*(foreground-background)>0) {
                 const unsigned a=std::clamp((r-background)*255/(foreground-background),0,255);
-                auto blend=[&](unsigned value,unsigned shift) { return (value*a+((output>>shift)&255)*(255-a)+127)/255; };
-                output=((a+((output>>24)*(255-a)+127)/255)<<24)|
-                    (blend(GetRValue(colors_.foreground),16)<<16)|(blend(GetGValue(colors_.foreground),8)<<8)|blend(GetBValue(colors_.foreground),0);
+                glyphs[static_cast<size_t>(y)*w+x]=a;
             } else output=pixel|0xff000000;
         }
         const auto blink=GetCaretBlinkTime();
         POINT caret{};
         if(GetFocus()==edit_&&GetCaretPos(&caret)&&
             (blink==INFINITE||!blink||GetTickCount64()%(static_cast<ULONGLONG>(blink)*2)<blink)) {
-            const DWORD color=0xff000000|(GetRValue(colors_.foreground)<<16)|(GetGValue(colors_.foreground)<<8)|GetBValue(colors_.foreground);
             for(int y=std::max(0L,caret.y);y<std::min(static_cast<int>(h),static_cast<int>(caret.y)+px(20));++y)
                 for(int x=std::max(0L,caret.x);x<std::min(static_cast<int>(w),static_cast<int>(caret.x)+std::max(1,px(1)));++x) {
-                    const int xx=origin.x+x,yy=origin.y+y;
-                    if(xx>=0&&yy>=0&&xx<paint_size_.cx&&yy<paint_size_.cy)
-                        paint_pixels_[static_cast<size_t>(yy)*paint_size_.cx+xx]=color;
+                    glyphs[static_cast<size_t>(y)*w+x]=255;
                 }
         }
+        blend_glass_text_mask(paint_pixels_,paint_size_.cx,paint_size_.cy,glyphs.data(),w,h,origin,colors_.foreground,dpi_);
         SelectObject(buffer,old); DeleteDC(buffer);
     }
     if(bitmap) DeleteObject(bitmap);
