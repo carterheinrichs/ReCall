@@ -3,6 +3,7 @@
 #include <DispatcherQueue.h>
 #include <d2d1effects.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.Effects.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Composition.h>
@@ -21,12 +22,16 @@ namespace abi_effects=ABI::Windows::Graphics::Effects;
 struct BackdropBlur : winrt::implements<BackdropBlur,effects::IGraphicsEffect,
     effects::IGraphicsEffectSource,abi_effects::IGraphicsEffectD2D1Interop> {
     effects::IGraphicsEffectSource source{nullptr};
-    winrt::hstring Name() const { return L"ReCallBackdropBlur"; }
+    bool saturation=false;
+    winrt::hstring Name() const { return saturation?L"ReCallBackdropSaturation":L"ReCallBackdropBlur"; }
     void Name(const winrt::hstring&) {}
     HRESULT __stdcall GetEffectId(GUID* id) noexcept override {
-        if(!id) return E_POINTER; *id=CLSID_D2D1GaussianBlur; return S_OK;
+        if(!id) return E_POINTER; *id=saturation?CLSID_D2D1ColorMatrix:CLSID_D2D1GaussianBlur; return S_OK;
     }
-    HRESULT __stdcall GetNamedPropertyMapping(LPCWSTR,UINT*,abi_effects::GRAPHICS_EFFECT_PROPERTY_MAPPING*) noexcept override {
+    HRESULT __stdcall GetNamedPropertyMapping(LPCWSTR name,UINT* index,abi_effects::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override {
+        if(!saturation&&name&&wcscmp(name,L"BlurAmount")==0&&index&&mapping) {
+            *index=0; *mapping=abi_effects::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT; return S_OK;
+        }
         return E_INVALIDARG;
     }
     HRESULT __stdcall GetPropertyCount(UINT* count) noexcept override {
@@ -38,9 +43,20 @@ struct BackdropBlur : winrt::implements<BackdropBlur,effects::IGraphicsEffect,
         using winrt::Windows::Foundation::PropertyValue;
         winrt::Windows::Foundation::IInspectable property{nullptr};
         switch(index) {
-        case 0: property=PropertyValue::CreateSingle(18.f); break;
-        case 1: property=PropertyValue::CreateUInt32(D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED); break;
-        case 2: property=PropertyValue::CreateUInt32(D2D1_BORDER_MODE_HARD); break;
+        case 0:
+            if(saturation) {
+                // LiquidGlass2's Rec.709 saturation boost: retain backdrop
+                // colors instead of washing them into a uniform gray sheet.
+                constexpr float s=1.3f,r=(1-s)*.2126f,g=(1-s)*.7152f,b=(1-s)*.0722f;
+                const float matrix[]={r+s,r,r,0,g,g+s,g,0,b,b,b+s,0,0,0,0,1,0,0,0,0};
+                property=PropertyValue::CreateSingleArray(matrix);
+            } else property=PropertyValue::CreateSingle(5.f);
+            break;
+        case 1: property=PropertyValue::CreateUInt32(saturation?D2D1_COLORMATRIX_ALPHA_MODE_PREMULTIPLIED:D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED); break;
+        case 2:
+            if(saturation) property=PropertyValue::CreateBoolean(false);
+            else property=PropertyValue::CreateUInt32(D2D1_BORDER_MODE_HARD);
+            break;
         default: return E_INVALIDARG;
         }
         return winrt::get_unknown(property)->QueryInterface(__uuidof(ABI::Windows::Foundation::IPropertyValue),reinterpret_cast<void**>(value));
@@ -61,12 +77,9 @@ LRESULT CALLBACK backdrop_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
     if(message==WM_ERASEBKGND) return 1;
     return DefWindowProcW(hwnd,message,wp,lp);
 }
-bool transparency_enabled() {
-    DWORD enabled=1,size=sizeof(enabled);
-    RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-        L"EnableTransparency",RRF_RT_REG_DWORD,nullptr,&enabled,&size);
+bool composition_enabled() {
     BOOL composition=FALSE; DwmIsCompositionEnabled(&composition);
-    return enabled&&composition;
+    return composition!=FALSE;
 }
 }
 struct GlassBackdrop::State {
@@ -76,12 +89,13 @@ struct GlassBackdrop::State {
     composition::Compositor compositor{nullptr};
     composition::Desktop::DesktopWindowTarget target{nullptr};
     composition::SpriteVisual visual{nullptr};
+    composition::CompositionEffectBrush effect{nullptr};
     composition::CompositionRoundedRectangleGeometry geometry{nullptr};
     ~State() {
-        if(target) target.Root(nullptr);
-        target=nullptr; visual=nullptr; geometry=nullptr; compositor=nullptr;
+        try { if(target) target.Root(nullptr); } catch(...) {}
+        target=nullptr; visual=nullptr; geometry=nullptr; effect=nullptr; compositor=nullptr;
         if(window) DestroyWindow(window);
-        if(queue) queue.ShutdownQueueAsync();
+        try { if(queue) queue.ShutdownQueueAsync(); } catch(...) {}
     }
     void initialize() {
         if(compositor) return;
@@ -93,7 +107,7 @@ struct GlassBackdrop::State {
         WNDCLASSW cls{}; cls.lpfnWndProc=backdrop_proc; cls.hInstance=GetModuleHandleW(nullptr);
         cls.lpszClassName=L"ReCall.GlassBackdrop";
         if(!RegisterClassW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS) winrt::throw_last_error();
-        window=CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW,
+        window=CreateWindowExW(WS_EX_TOPMOST|WS_EX_NOREDIRECTIONBITMAP|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW,
             cls.lpszClassName,L"ReCall glass backdrop",WS_POPUP,0,0,1,1,nullptr,nullptr,cls.hInstance,nullptr);
         if(!window) winrt::throw_last_error();
         const BOOL host=TRUE;
@@ -115,9 +129,13 @@ struct GlassBackdrop::State {
             reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(winrt::put_abi(target))));
         auto blur=winrt::make_self<BackdropBlur>();
         blur->source=composition::CompositionEffectSourceParameter(L"Desktop");
-        auto brush=compositor.CreateEffectFactory(*blur).CreateBrush();
-        brush.SetSourceParameter(L"Desktop",compositor.CreateHostBackdropBrush());
-        visual=compositor.CreateSpriteVisual(); visual.Brush(brush);
+        auto color=winrt::make_self<BackdropBlur>(); color->saturation=true; color->source=*blur;
+        effect=compositor.CreateEffectFactory(*color,{L"ReCallBackdropBlur.BlurAmount"}).CreateBrush();
+        // The helper's host accent supplies the desktop beneath this visual.
+        // CreateHostBackdropBrush would instead apply Windows' transparency
+        // fallback (solid black when disabled), preventing our Gaussian blur.
+        effect.SetSourceParameter(L"Desktop",compositor.CreateBackdropBrush());
+        visual=compositor.CreateSpriteVisual(); visual.Brush(effect);
         geometry=compositor.CreateRoundedRectangleGeometry();
         visual.Clip(compositor.CreateGeometricClip(geometry));
         visual.BorderMode(composition::CompositionBorderMode::Soft);
@@ -127,10 +145,17 @@ struct GlassBackdrop::State {
 GlassBackdrop::GlassBackdrop():state_(std::make_unique<State>()) {}
 GlassBackdrop::~GlassBackdrop()=default;
 bool GlassBackdrop::configure(bool enabled) {
-    state_->enabled=enabled&&transparency_enabled();
+    // An explicit per-app blur request must not silently turn into transparency
+    // because the Windows-wide decorative transparency preference is disabled.
+    // High contrast is handled by the caller before enabling this surface.
+    state_->enabled=enabled&&composition_enabled();
     if(state_->enabled) {
         try { state_->initialize(); }
-        catch(...) { state_->enabled=false; if(state_->window) ShowWindow(state_->window,SW_HIDE); throw; }
+        catch(const winrt::hresult_error& error) {
+            auto message=utf8(error.message().c_str());
+            state_=std::make_unique<State>();
+            throw std::runtime_error("Cannot initialize live background blur: "+message);
+        } catch(...) { state_=std::make_unique<State>(); throw; }
     } else if(state_->window) ShowWindow(state_->window,SW_HIDE);
     return state_->enabled;
 }
@@ -140,7 +165,8 @@ void GlassBackdrop::sync(HWND palette,int dpi,bool visible) {
     RECT rect{}; GetWindowRect(palette,&rect);
     const auto width=static_cast<float>(rect.right-rect.left),height=static_cast<float>(rect.bottom-rect.top);
     state_->visual.Size({width,height}); state_->geometry.Size({width,height});
-    const float radius=static_cast<float>(MulDiv(28,dpi,96));
+    state_->effect.Properties().InsertScalar(L"ReCallBackdropBlur.BlurAmount",5.f*dpi/96.f);
+    const float radius=static_cast<float>(MulDiv(48,dpi,96));
     state_->geometry.CornerRadius({radius,radius});
     // hWndInsertAfter=palette places this surface directly behind the palette
     // in the same topmost band, without ever taking keyboard or mouse focus.

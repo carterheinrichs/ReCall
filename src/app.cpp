@@ -16,7 +16,7 @@ namespace recall {
 namespace {
 constexpr UINT results_message=WM_APP+1, tray_message=WM_APP+2, changed_message=WM_APP+3, error_message=WM_APP+4,
     preview_message=WM_APP+5,history_message=WM_APP+6,clipboard_ready_message=WM_APP+7;
-constexpr UINT hotkey_id=1, paste_timer=2,clipboard_timer=3;
+constexpr UINT hotkey_id=1, paste_timer=2,clipboard_timer=3,caret_timer=4;
 void fill(HDC dc,RECT r,COLORREF color) { HBRUSH b=CreateSolidBrush(color); FillRect(dc,&r,b); DeleteObject(b); }
 void text(HDC dc,const std::wstring& s,RECT r,COLORREF color,HFONT font,UINT flags=DT_LEFT|DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS) {
     auto old=SelectObject(dc,font); SetBkMode(dc,TRANSPARENT); SetTextColor(dc,color);
@@ -152,8 +152,9 @@ void App::capture() {
 void App::fonts() {
     if(font_) DeleteObject(font_); if(small_font_) DeleteObject(small_font_); if(emoji_font_) DeleteObject(emoji_font_);
     const auto face=L"Segoe UI";
-    font_=CreateFontW(-px(17),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,face);
-    small_font_=CreateFontW(-px(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,face);
+    const auto quality=config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast?ANTIALIASED_QUALITY:CLEARTYPE_QUALITY;
+    font_=CreateFontW(-px(17),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,quality,DEFAULT_PITCH,face);
+    small_font_=CreateFontW(-px(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,quality,DEFAULT_PITCH,face);
     emoji_font_=CreateFontW(-px(28),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI Emoji");
     if(edit_) SendMessageW(edit_,WM_SETFONT,reinterpret_cast<WPARAM>(font_),TRUE);
 }
@@ -163,7 +164,8 @@ void App::position() {
     const int w=std::min(px(900),static_cast<int>(monitor.rcWork.right-monitor.rcWork.left)),h=std::min(px(540),static_cast<int>(monitor.rcWork.bottom-monitor.rcWork.top));
     SetWindowPos(hwnd_,HWND_TOPMOST,monitor.rcWork.left+(monitor.rcWork.right-monitor.rcWork.left-w)/2,
         monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-h)/3,w,h,SWP_NOACTIVATE);
-    MoveWindow(edit_,px(24),px(21),w-px(48),px(32),TRUE);
+    const bool glass=config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast;
+    MoveWindow(edit_,px(glass?36:24),px(glass?24:21),w-px(glass?72:48),px(32),TRUE);
     apply_window_shape(hwnd_,config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast,w,h,dpi_);
     if(backdrop_) backdrop_->sync(hwnd_,dpi_,IsWindowVisible(hwnd_)!=FALSE);
 }
@@ -173,13 +175,16 @@ void App::apply_theme() {
     const bool glass=config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast;
     try {
         apply_glass_backdrop(hwnd_,false,colors_.dark);
-        apply_appearance(hwnd_,config_.opacity,glass?false:config_.blur,colors_.high_contrast);
+        apply_appearance(hwnd_,glass?100:config_.opacity,glass?false:config_.blur,colors_.high_contrast);
+        if(glass) prepare_glass_window(hwnd_);
         glass_backdrop_=false;
         if(glass&&!backdrop_) backdrop_=std::make_unique<GlassBackdrop>();
         if(backdrop_) glass_backdrop_=backdrop_->configure(glass&&config_.blur);
     }
     catch(const std::exception& e) { report(wide(e.what())); }
     position();
+    if(glass&&IsWindowVisible(hwnd_)) SetTimer(hwnd_,caret_timer,200,nullptr);
+    else KillTimer(hwnd_,caret_timer);
     RedrawWindow(hwnd_,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
 }
 void App::toggle() {
@@ -309,12 +314,20 @@ void App::paint() {
     const bool glass=config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast;
     const int split=bounds.right*3/5;
     std::vector<DWORD> material;
-    std::vector<RECT> opaque_images;
+    struct ImageJob { std::shared_ptr<Gdiplus::Bitmap> bitmap; RECT bounds; };
+    struct TextJob { std::wstring string; RECT bounds; COLORREF color; HFONT font; UINT flags; };
+    std::vector<ImageJob> image_jobs;
+    std::vector<TextJob> text_jobs;
+    auto draw_text=[&](const std::wstring& string,RECT rect,COLORREF color,HFONT font,
+        UINT flags=DT_LEFT|DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS) {
+        if(glass) text_jobs.push_back({string,rect,color,font,flags});
+        else text(buffer,string,rect,color,font,flags);
+    };
     if(glass) {
         GdiFlush();
         const int selection_y=shown_.rows().empty()?-1:px(82)+(selected_-first_)*px(58);
         draw_glass_material(paint_pixels_,bounds.right,bounds.bottom,dpi_,colors_.dark,
-            glass_backdrop_,selection_y,split);
+            true,selection_y,split);
         material.assign(paint_pixels_,paint_pixels_+static_cast<size_t>(bounds.right)*bounds.bottom);
         prepare_glass_content(paint_pixels_,material);
     } else {
@@ -331,8 +344,8 @@ void App::paint() {
         int w=static_cast<int>(b->GetWidth()*scale),h=static_cast<int>(b->GetHeight()*scale);
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
         int x=target.left+(target.right-target.left-w)/2,y=target.top+(target.bottom-target.top-h)/2;
-        graphics.DrawImage(b.get(),x,y,w,h);
-        if(glass) opaque_images.push_back({x,y,x+w,y+h});
+        if(glass) image_jobs.push_back({b,{x,y,x+w,y+h}});
+        else graphics.DrawImage(b.get(),x,y,w,h);
     };
     for(int row=0;row<rows;++row) {
         int idx=first_+row; if(idx>=static_cast<int>(shown_.rows().size())) break;
@@ -347,78 +360,118 @@ void App::paint() {
         if(item.kind==Kind::Emoji) {
             RECT glyph{left,y,left+px(48),y+px(50)};
             if(!emoji_renderer_.draw(buffer,item.value,glyph,static_cast<float>(px(28)),row_text))
-                text(buffer,item.value,glyph,row_text,emoji_font_);
+                draw_text(item.value,glyph,row_text,emoji_font_);
             left+=px(54);
         }
-        text(buffer,single_line(item.title.substr(0,512)),{left,y+px(5),split-px(25),y+px(30)},row_text,font_);
-        text(buffer,single_line(item.detail).substr(0,512),{left,y+px(30),split-px(25),y+px(50)},row_detail,small_font_);
+        draw_text(single_line(item.title.substr(0,512)),{left,y+px(5),split-px(25),y+px(30)},row_text,font_);
+        draw_text(single_line(item.detail).substr(0,512),{left,y+px(30),split-px(25),y+px(50)},row_detail,small_font_);
     }
-    if(shown_.rows().empty()) text(buffer,L"No results",{px(28),px(110),split,px(150)},muted,font_);
+    if(shown_.rows().empty()) draw_text(L"No results",{px(28),px(110),split,px(150)},muted,font_);
     if(!shown_.rows().empty()&&selected_<static_cast<int>(shown_.rows().size())) {
         const auto& item=shown_.rows()[selected_]; RECT preview{split+px(24),px(100),bounds.right-px(24),bounds.bottom-px(85)};
         if(item.kind==Kind::Image) image(item,preview);
         else if(item.kind==Kind::Emoji) {
             RECT glyph{preview.left,preview.top,preview.right,preview.top+px(72)};
             if(!emoji_renderer_.draw(buffer,item.value,glyph,static_cast<float>(px(48)),foreground))
-                text(buffer,item.value,glyph,foreground,emoji_font_);
+                draw_text(item.value,glyph,foreground,emoji_font_);
             preview.top+=px(88);
-            text(buffer,item.detail,preview,foreground,font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_WORD_ELLIPSIS);
+            draw_text(item.detail,preview,foreground,font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_WORD_ELLIPSIS);
         }
-        else text(buffer,(item.kind==Kind::Text?item.value.substr(0,12000):item.title+L"\n\n"+item.detail).substr(0,12000),preview,foreground,
+        else draw_text((item.kind==Kind::Text?item.value.substr(0,12000):item.title+L"\n\n"+item.detail).substr(0,12000),preview,foreground,
             font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_WORD_ELLIPSIS);
     }
     }
-    text(buffer,shown_.status,{px(24),bounds.bottom-px(40),split,bounds.bottom-px(15)},muted,small_font_);
-    text(buffer,L"↑ ↓ navigate   Enter select   Esc close",{split+px(16),bounds.bottom-px(40),bounds.right-px(16),bounds.bottom-px(15)},muted,small_font_);
+    draw_text(shown_.status,{px(glass?36:24),bounds.bottom-px(glass?44:40),split,bounds.bottom-px(glass?19:15)},muted,small_font_);
+    draw_text(L"↑ ↓ navigate   Enter select   Esc close",{split+px(16),bounds.bottom-px(glass?44:40),bounds.right-px(glass?36:16),bounds.bottom-px(glass?19:15)},muted,small_font_);
     if(glass) {
         GdiFlush();
-        finish_glass_content(paint_pixels_,material,bounds.right,bounds.bottom,opaque_images);
+        finish_glass_content(paint_pixels_,material,bounds.right,bounds.bottom,{});
+        {
+            Gdiplus::Bitmap frame(bounds.right,bounds.bottom,bounds.right*4,PixelFormat32bppPARGB,reinterpret_cast<BYTE*>(paint_pixels_));
+            Gdiplus::Graphics g(&frame); g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            for(const auto& image:image_jobs) g.DrawImage(image.bitmap.get(),static_cast<INT>(image.bounds.left),static_cast<INT>(image.bounds.top),
+                static_cast<INT>(image.bounds.right-image.bounds.left),static_cast<INT>(image.bounds.bottom-image.bounds.top));
+            g.Flush(Gdiplus::FlushIntentionSync);
+        }
+        for(const auto& item:text_jobs) draw_glass_text(paint_pixels_,bounds.right,bounds.bottom,buffer,
+            item.string,item.bounds,item.color,item.font,item.flags);
     }
-    BitBlt(dc,0,0,bounds.right,bounds.bottom,buffer,0,0,SRCCOPY);
-    if(glass) GdiFlush();
+    if(glass) {
+        render_glass_edit();
+        try { present_glass_window(hwnd_,buffer,{bounds.right,bounds.bottom},config_.opacity); }
+        catch(const std::exception& error) { report(wide(error.what())); }
+    } else BitBlt(dc,0,0,bounds.right,bounds.bottom,buffer,0,0,SRCCOPY);
     EndPaint(hwnd_,&ps);
 }
-void App::paint_glass_edit(HWND edit) {
-    PAINTSTRUCT ps{}; HDC dc=BeginPaint(edit,&ps);
-    RECT bounds{}; GetClientRect(edit,&bounds);
+void App::render_glass_edit() {
+    RECT bounds{}; GetClientRect(edit_,&bounds);
     const int w=bounds.right,h=bounds.bottom;
+    if(w<=0||h<=0) return;
     BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
     info.bmiHeader.biWidth=w; info.bmiHeader.biHeight=-h;
     info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32;
     void* pixels=nullptr;
-    auto bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
-    auto buffer=bitmap?CreateCompatibleDC(dc):nullptr;
+    auto bitmap=CreateDIBSection(paint_dc_,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
+    auto buffer=bitmap?CreateCompatibleDC(paint_dc_):nullptr;
     if(buffer) {
         auto old=SelectObject(buffer,bitmap);
         fill(buffer,bounds,colors_.background);
-        // Keep native EDIT layout, selection, cue, scrolling, and IME behavior.
-        DefSubclassProc(edit,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(buffer),PRF_CLIENT|PRF_ERASEBKGND);
+        // Keep native editing, selection, scrolling, cue, and IME behavior;
+        // include the control in the supplied per-pixel window surface.
+        SendMessageW(edit_,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(buffer),PRF_CLIENT|PRF_ERASEBKGND);
         GdiFlush();
-        POINT origin{}; MapWindowPoints(edit,hwnd_,&origin,1);
+        POINT origin{}; MapWindowPoints(edit_,hwnd_,&origin,1);
         const DWORD blank=(GetRValue(colors_.background)<<16)|(GetGValue(colors_.background)<<8)|GetBValue(colors_.background);
-        auto output=static_cast<DWORD*>(pixels);
+        auto input=static_cast<DWORD*>(pixels);
         for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
-            auto& pixel=output[static_cast<size_t>(y)*w+x];
             const int parent_x=origin.x+x,parent_y=origin.y+y;
-            if((pixel&0x00ffffff)==blank&&paint_pixels_&&parent_x>=0&&parent_y>=0&&
-                parent_x<paint_size_.cx&&parent_y<paint_size_.cy)
-                pixel=paint_pixels_[static_cast<size_t>(parent_y)*paint_size_.cx+parent_x];
-            else pixel|=0xff000000;
+            if(parent_x<0||parent_y<0||parent_x>=paint_size_.cx||parent_y>=paint_size_.cy) continue;
+            const auto pixel=input[static_cast<size_t>(y)*w+x];
+            if((pixel&0x00ffffff)==blank) continue;
+            auto& output=paint_pixels_[static_cast<size_t>(parent_y)*paint_size_.cx+parent_x];
+            const int r=(pixel>>16)&255,g=(pixel>>8)&255,b=pixel&255;
+            const int background=GetRValue(colors_.background),foreground=GetRValue(colors_.foreground);
+            if(std::max({r,g,b})-std::min({r,g,b})<=4&&foreground!=background&&
+                (r-background)*(foreground-background)>0) {
+                const unsigned a=std::clamp((r-background)*255/(foreground-background),0,255);
+                auto blend=[&](unsigned value,unsigned shift) { return (value*a+((output>>shift)&255)*(255-a)+127)/255; };
+                output=((a+((output>>24)*(255-a)+127)/255)<<24)|
+                    (blend(GetRValue(colors_.foreground),16)<<16)|(blend(GetGValue(colors_.foreground),8)<<8)|blend(GetBValue(colors_.foreground),0);
+            } else output=pixel|0xff000000;
         }
-        BitBlt(dc,0,0,w,h,buffer,0,0,SRCCOPY); GdiFlush();
+        const auto blink=GetCaretBlinkTime();
+        POINT caret{};
+        if(GetFocus()==edit_&&GetCaretPos(&caret)&&
+            (blink==INFINITE||!blink||GetTickCount64()%(static_cast<ULONGLONG>(blink)*2)<blink)) {
+            const DWORD color=0xff000000|(GetRValue(colors_.foreground)<<16)|(GetGValue(colors_.foreground)<<8)|GetBValue(colors_.foreground);
+            for(int y=std::max(0L,caret.y);y<std::min(static_cast<int>(h),static_cast<int>(caret.y)+px(20));++y)
+                for(int x=std::max(0L,caret.x);x<std::min(static_cast<int>(w),static_cast<int>(caret.x)+std::max(1,px(1)));++x) {
+                    const int xx=origin.x+x,yy=origin.y+y;
+                    if(xx>=0&&yy>=0&&xx<paint_size_.cx&&yy<paint_size_.cy)
+                        paint_pixels_[static_cast<size_t>(yy)*paint_size_.cx+xx]=color;
+                }
+        }
         SelectObject(buffer,old); DeleteDC(buffer);
     }
     if(bitmap) DeleteObject(bitmap);
-    EndPaint(edit,&ps);
 }
 LRESULT CALLBACK App::edit_proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PTR data) {
     auto* self=reinterpret_cast<App*>(data);
     if(self->config_.theme==ThemeStyle::LiquidGlass&&!self->colors_.high_contrast) {
-        if(msg==WM_PAINT) { self->paint_glass_edit(hwnd); return 0; }
+        if(msg==WM_PAINT) {
+            PAINTSTRUCT ps{}; BeginPaint(hwnd,&ps); EndPaint(hwnd,&ps);
+            InvalidateRect(self->hwnd_,nullptr,FALSE); return 0;
+        }
         if(msg==WM_ERASEBKGND) return 1;
     }
     if(msg==WM_KEYDOWN) {
         switch(wp) {
+        case 'A':
+            if(GetKeyState(VK_CONTROL)&0x8000) {
+                SendMessageW(hwnd,EM_SETSEL,0,-1);
+                InvalidateRect(self->hwnd_,nullptr,FALSE); return 0;
+            }
+            break;
         case VK_BACK:
             if(GetKeyState(VK_CONTROL)&0x8000) {
                 DWORD begin{},end{};
@@ -442,7 +495,16 @@ LRESULT CALLBACK App::edit_proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,
     }
     // TranslateMessage produces DEL for Ctrl+Backspace on a standard EDIT control.
     if(msg==WM_CHAR&&(wp==VK_RETURN||wp==VK_ESCAPE||wp==0x7F||(wp==VK_BACK&&(GetKeyState(VK_CONTROL)&0x8000)))) return 0;
-    return DefSubclassProc(hwnd,msg,wp,lp);
+    auto result=DefSubclassProc(hwnd,msg,wp,lp);
+    if(self->config_.theme==ThemeStyle::LiquidGlass&&!self->colors_.high_contrast) {
+        switch(msg) {
+        case WM_CHAR: case WM_KEYDOWN: case WM_KEYUP: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+        case WM_SETFOCUS: case WM_KILLFOCUS: case WM_HSCROLL: case WM_IME_COMPOSITION: case EM_SETSEL:
+            InvalidateRect(self->hwnd_,nullptr,FALSE); break;
+        case WM_MOUSEMOVE: if(wp&MK_LBUTTON) InvalidateRect(self->hwnd_,nullptr,FALSE); break;
+        }
+    }
+    return result;
 }
 LRESULT CALLBACK App::keyboard_proc(int code,WPARAM wp,LPARAM lp) {
     auto* self=instance_;
@@ -481,7 +543,9 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
     if(msg==taskbar_created_&&taskbar_created_) { tray(true); return 0; }
     switch(msg) {
     case WM_HOTKEY: case WM_APP+9: toggle(); return 0;
-    case WM_COMMAND: if(reinterpret_cast<HWND>(lp)==edit_&&HIWORD(wp)==EN_CHANGE) query(); return 0;
+    case WM_COMMAND: if(reinterpret_cast<HWND>(lp)==edit_&&HIWORD(wp)==EN_CHANGE) {
+        query(); InvalidateRect(hwnd_,nullptr,FALSE);
+    } return 0;
     case WM_CLIPBOARDUPDATE: capture(); return 0;
     case changed_message: if(IsWindowVisible(hwnd_)) query(); return 0;
     case results_message: {
@@ -528,9 +592,14 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
         else if(LOWORD(lp)==NIN_SELECT||LOWORD(lp)==NIN_KEYSELECT) toggle(); return 0;
     case WM_ACTIVATE: if(LOWORD(wp)==WA_INACTIVE) ShowWindow(hwnd_,SW_HIDE); return 0;
     case WM_SHOWWINDOW:
+        if(wp&&config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast) SetTimer(hwnd_,caret_timer,200,nullptr);
+        else KillTimer(hwnd_,caret_timer);
         if(backdrop_) backdrop_->sync(hwnd_,dpi_,wp!=0);
         break;
-    case WM_TIMER: if(wp==paste_timer) paste(); else if(wp==clipboard_timer) finish_clipboard(); return 0;
+    case WM_WINDOWPOSCHANGED:
+        if(backdrop_) backdrop_->sync(hwnd_,dpi_,IsWindowVisible(hwnd_)!=FALSE);
+        break;
+    case WM_TIMER: if(wp==paste_timer) paste(); else if(wp==clipboard_timer) finish_clipboard(); else if(wp==caret_timer&&IsWindowVisible(hwnd_)&&GetFocus()==edit_) InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_DPICHANGED: dpi_=HIWORD(wp); fonts(); position(); request_previews(); return 0;
     case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_SYSCOLORCHANGE: apply_theme(); return 0;
     case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wp),colors_.foreground); SetBkColor(reinterpret_cast<HDC>(wp),colors_.background); SetDCBrushColor(reinterpret_cast<HDC>(wp),colors_.background); return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));

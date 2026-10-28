@@ -56,9 +56,9 @@ void apply_window_shape(HWND window,bool glass,int width,int height,int dpi) {
     DwmSetWindowAttribute(window,DWMWA_NCRENDERING_POLICY,&frame,sizeof(frame));
     DwmSetWindowAttribute(window,DWMWA_BORDER_COLOR,&border,sizeof(border));
     if(glass) {
-        // Match the painted 28-DIP shell; the region owns the complete window,
+        // Match the painted 48-DIP shell; the region owns the complete window,
         // including its frame, and must not extend a pixel beyond its bounds.
-        const int diameter=MulDiv(56,dpi,96);
+        const int diameter=MulDiv(96,dpi,96);
         auto region=CreateRoundRectRgn(0,0,width,height,diameter,diameter);
         if(!region) throw std::runtime_error("Cannot create glass window shape");
         if(!SetWindowRgn(window,region,TRUE)) {
@@ -89,5 +89,21 @@ AppearanceResult apply_appearance(HWND window,unsigned opacity,bool blur,bool hi
     if(opacity<100&&!SetLayeredWindowAttributes(window,0,result.alpha,LWA_ALPHA))
         throw std::runtime_error("Cannot set window opacity");
     return result;
+}
+void prepare_glass_window(HWND window) {
+    const auto style=GetWindowLongPtrW(window,GWL_EXSTYLE);
+    // SetLayeredWindowAttributes redirects GDI and discards material alpha.
+    // Clear its state before switching to a supplied premultiplied surface.
+    SetWindowLongPtrW(window,GWL_EXSTYLE,style&~static_cast<LONG_PTR>(WS_EX_LAYERED));
+    SetWindowLongPtrW(window,GWL_EXSTYLE,style|WS_EX_LAYERED);
+}
+BYTE present_glass_window(HWND window,HDC source,SIZE size,unsigned opacity) {
+    if(opacity<1||opacity>100) throw std::runtime_error("Window opacity must be from 1 to 100 percent");
+    BLENDFUNCTION blend{AC_SRC_OVER,0,static_cast<BYTE>(MulDiv(static_cast<int>(opacity),255,100)),AC_SRC_ALPHA};
+    POINT origin{};
+    GdiFlush();
+    if(!UpdateLayeredWindow(window,nullptr,nullptr,&size,source,&origin,0,&blend,ULW_ALPHA))
+        throw std::runtime_error("Cannot present translucent glass window: "+std::to_string(GetLastError()));
+    return blend.SourceConstantAlpha;
 }
 }

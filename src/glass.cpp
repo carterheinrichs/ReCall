@@ -38,7 +38,7 @@ void draw_glass_material(DWORD* pixels,int width,int height,int dpi,bool dark,
         Color(80,48,48,48),Color(80,16,16,16),Color(80,48,48,48),Color(80,172,172,172)};
     LinearGradientBrush rim(PointF(0,0),PointF(0,static_cast<float>(height)),Color(255,255,255,255),Color(255,0,0,0));
     rim.SetInterpolationColors(colors,stops,6);
-    GraphicsPath shell; rounded(shell,RectF(px(1),px(1),width-px(2),height-px(2)),px(28));
+    GraphicsPath shell; rounded(shell,RectF(px(1),px(1),width-px(2),height-px(2)),px(48));
     Pen edge(&rim,std::max(1.f,px(1))); g.DrawPath(&edge,&shell);
 
     auto panel=[&](RectF bounds,float radius,Color fill) {
@@ -49,12 +49,12 @@ void draw_glass_material(DWORD* pixels,int width,int height,int dpi,bool dark,
         Pen pen(&border,std::max(.7f,px(1))); g.DrawPath(&pen,&path);
     };
     // Search field, selected row, and bottom tray are separate thin layers.
-    panel(RectF(px(12),px(11),width-px(24),px(52)),px(22),
+    panel(RectF(px(24),px(18),width-px(48),px(44)),px(22),
         dark?Color(31,0,0,0):Color(60,255,255,255));
     if(selection_y>=0&&selection_y<height-px(80))
         panel(RectF(px(12),static_cast<float>(selection_y),split-px(24),px(55)),px(20),
             dark?Color(48,90,90,90):Color(46,255,255,255));
-    panel(RectF(px(12),height-px(50),width-px(24),px(40)),px(20),
+    panel(RectF(px(24),height-px(56),width-px(48),px(40)),px(20),
         dark?Color(62,74,74,74):Color(76,255,255,255));
     Pen divider(dark?Color(30,255,255,255):Color(25,0,0,0),std::max(.5f,px(1)));
     g.DrawLine(&divider,static_cast<float>(split),px(86),static_cast<float>(split),height-px(68));
@@ -73,5 +73,38 @@ void finish_glass_content(DWORD* pixels,std::span<const DWORD> material,
         for(int y=std::max(0L,r.top);y<std::min(static_cast<LONG>(height),r.bottom);++y)
             for(int x=std::max(0L,r.left);x<std::min(static_cast<LONG>(width),r.right);++x)
                 pixels[static_cast<size_t>(y)*width+x]|=0xff000000;
+}
+void draw_glass_text(DWORD* pixels,int width,int height,HDC compatible,const std::wstring& text,
+    RECT bounds,COLORREF color,HFONT font,UINT flags) {
+    const int w=bounds.right-bounds.left,h=bounds.bottom-bounds.top;
+    if(text.empty()||w<=0||h<=0) return;
+    BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=w; info.bmiHeader.biHeight=-h;
+    info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32;
+    void* data=nullptr;
+    auto bitmap=CreateDIBSection(compatible,&info,DIB_RGB_COLORS,&data,nullptr,0);
+    auto dc=bitmap?CreateCompatibleDC(compatible):nullptr;
+    if(dc) {
+        auto old=SelectObject(dc,bitmap),oldfont=SelectObject(dc,font);
+        auto coverage=static_cast<DWORD*>(data);
+        std::fill_n(coverage,static_cast<size_t>(w)*h,0);
+        SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(255,255,255));
+        RECT local{0,0,w,h};
+        DrawTextW(dc,text.c_str(),static_cast<int>(text.size()),&local,flags|DT_NOPREFIX);
+        GdiFlush();
+        for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
+            const int xx=bounds.left+x,yy=bounds.top+y;
+            if(xx<0||yy<0||xx>=width||yy>=height) continue;
+            const DWORD mask=coverage[static_cast<size_t>(y)*w+x];
+            const unsigned a=std::max({mask&255,(mask>>8)&255,(mask>>16)&255});
+            if(!a) continue;
+            auto& dst=pixels[static_cast<size_t>(yy)*width+xx];
+            auto blend=[&](unsigned channel,unsigned shift) { return (channel*a+((dst>>shift)&255)*(255-a)+127)/255; };
+            dst=((a+((dst>>24)*(255-a)+127)/255)<<24)|
+                (blend(GetRValue(color),16)<<16)|(blend(GetGValue(color),8)<<8)|blend(GetBValue(color),0);
+        }
+        SelectObject(dc,oldfont); SelectObject(dc,old); DeleteDC(dc);
+    }
+    if(bitmap) DeleteObject(bitmap);
 }
 }

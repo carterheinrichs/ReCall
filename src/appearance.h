@@ -9,4 +9,6 @@ struct AppearanceResult {
 bool apply_glass_backdrop(HWND window,bool enabled,bool dark);
 void apply_window_shape(HWND window,bool glass,int width,int height,int dpi);
 AppearanceResult apply_appearance(HWND window,unsigned opacity,bool blur,bool high_contrast=false);
+void prepare_glass_window(HWND window);
+BYTE present_glass_window(HWND window,HDC source,SIZE size,unsigned opacity);
 }

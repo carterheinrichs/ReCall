@@ -9,4 +9,6 @@ void draw_glass_material(DWORD* pixels,int width,int height,int dpi,bool dark,
 void prepare_glass_content(DWORD* pixels,std::span<const DWORD> material);
 void finish_glass_content(DWORD* pixels,std::span<const DWORD> material,
     int width,int height,std::span<const RECT> opaque_images);
+void draw_glass_text(DWORD* pixels,int width,int height,HDC compatible,const std::wstring& text,
+    RECT bounds,COLORREF color,HFONT font,UINT flags);
 }
