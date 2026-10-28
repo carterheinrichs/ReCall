@@ -3,6 +3,7 @@
 #include "theme.h"
 #include "glass.h"
 #include <gdiplus.h>
+#include <dwmapi.h>
 #include <iostream>
 
 using namespace recall;
@@ -37,7 +38,7 @@ int main() {
         {
             constexpr int width=300,height=220;
             std::vector<DWORD> pixels(width*height);
-            draw_glass_material(pixels.data(),width,height,96,true,80,true,82,180);
+            draw_glass_material(pixels.data(),width,height,96,true,true,82,180);
             auto material=pixels;
             check((material[75*width+30]>>24)==26,"reference dark glass uses ten percent tint rather than dense acrylic");
             check((material[100*width+30]>>24)>26&&(material[100*width+30]>>24)<100,"selected panel remains translucent");
@@ -48,7 +49,7 @@ int main() {
             check(pixels[75*width+30]==0xffffffff,"foreground text regains opaque alpha");
             check(pixels[76*width+30]==material[76*width+30],"unpainted material retains original alpha");
             check((pixels[100*width+210]>>24)==255,"image matching tint is still opaque");
-            draw_glass_material(pixels.data(),width,height,96,false,80,false,-1,180);
+            draw_glass_material(pixels.data(),width,height,96,false,false,-1,180);
             check((pixels[75*width+30]>>24)==255,"unavailable blur uses solid material fallback");
         }
         Gdiplus::GdiplusShutdown(token);
@@ -68,11 +69,37 @@ int main() {
             apply_glass_backdrop(window,true,false);
             check(!(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_LAYERED),"glass backdrop does not fade foreground with layered alpha");
             check(!apply_glass_backdrop(window,false,false),"glass backdrop can be reset for default theme");
+            apply_window_shape(window,true,400,300,96);
+            HRGN shape=CreateRectRgn(0,0,0,0);
+            check(GetWindowRgn(window,shape)!=ERROR,"glass has an actual window clipping region");
+            check(!PtInRegion(shape,0,0)&&!PtInRegion(shape,399,0)&&!PtInRegion(shape,0,299)&&!PtInRegion(shape,399,299),"all four native corners are excluded");
+            check(PtInRegion(shape,200,0)&&PtInRegion(shape,200,150),"clipping preserves the straight edges and content");
+            check(PtInRegion(shape,20,5),"96 DPI curve follows the 28 DIP material radius");
+            BOOL frame=TRUE;
+            if(SUCCEEDED(DwmGetWindowAttribute(window,DWMWA_NCRENDERING_ENABLED,&frame,sizeof(frame))))
+                check(!frame,"glass does not retain a native frame behind its outline");
+            apply_window_shape(window,true,400,300,192);
+            GetWindowRgn(window,shape);
+            check(!PtInRegion(shape,20,5),"window clipping radius follows DPI changes");
+            apply_window_shape(window,false,400,300,96);
+            check(GetWindowRgn(window,shape)==ERROR,"default theme restores the native window outline");
+            DeleteObject(shape);
             auto result=apply_appearance(window,80,false);
             BYTE alpha{}; DWORD flags{}; COLORREF key{};
             check(GetLayeredWindowAttributes(window,&key,&alpha,&flags)&&alpha==204&&(flags&LWA_ALPHA),"80 percent native window alpha applied");
             check(result.alpha==204&&!result.blur_enabled,"opacity and blur independently controlled");
             check((GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOOLWINDOW)!=0,"existing window styles preserved");
+            // The same native alpha must work for glass, even without blur.
+            for(bool blur:{false,true}) {
+                for(unsigned opacity:{1u,20u,60u,80u,99u}) {
+                    apply_glass_backdrop(window,false,false);
+                    apply_appearance(window,opacity,false);
+                    apply_glass_backdrop(window,blur,false);
+                    apply_window_shape(window,true,400,300,96);
+                    check(GetLayeredWindowAttributes(window,&key,&alpha,&flags)&&alpha==MulDiv(opacity,255,100),"glass opacity reaches the native window independently of blur");
+                }
+            }
+            apply_window_shape(window,false,400,300,96);
             apply_appearance(window,100,false);
             check(!(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_LAYERED),"100 percent restores non-layered window");
             apply_appearance(window,80,true);

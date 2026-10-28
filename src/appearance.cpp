@@ -32,10 +32,32 @@ bool apply_glass_backdrop(HWND window,bool enabled,bool dark) {
     const int type=DWMSBT_NONE;
     DwmSetWindowAttribute(window,DWMWA_SYSTEMBACKDROP_TYPE,&type,sizeof(type));
     const bool blurred=set_blur(window,enabled);
-    MARGINS margins=blurred?MARGINS{-1,-1,-1,-1}:MARGINS{};
+    // Keep the native frame out of the client area. Extending it behind our
+    // larger rounded outline leaves the system's smaller corners exposed.
+    MARGINS margins{};
     const bool extended=SUCCEEDED(DwmExtendFrameIntoClientArea(window,&margins));
     if(!extended&&blurred) set_blur(window,false);
     return blurred&&extended;
+}
+void apply_window_shape(HWND window,bool glass,int width,int height,int dpi) {
+    const int corners=glass?DWMWCP_DONOTROUND:DWMWCP_ROUND;
+    const DWMNCRENDERINGPOLICY frame=glass?DWMNCRP_DISABLED:DWMNCRP_USEWINDOWSTYLE;
+    const COLORREF border=glass?DWMWA_COLOR_NONE:DWMWA_COLOR_DEFAULT;
+    DwmSetWindowAttribute(window,DWMWA_WINDOW_CORNER_PREFERENCE,&corners,sizeof(corners));
+    DwmSetWindowAttribute(window,DWMWA_NCRENDERING_POLICY,&frame,sizeof(frame));
+    DwmSetWindowAttribute(window,DWMWA_BORDER_COLOR,&border,sizeof(border));
+    if(glass) {
+        // Match the painted 28-DIP shell; the region owns the complete window,
+        // including its frame, and must not extend a pixel beyond its bounds.
+        const int diameter=MulDiv(56,dpi,96);
+        auto region=CreateRoundRectRgn(0,0,width,height,diameter,diameter);
+        if(!region) throw std::runtime_error("Cannot create glass window shape");
+        if(!SetWindowRgn(window,region,TRUE)) {
+            DeleteObject(region); throw std::runtime_error("Cannot apply glass window shape");
+        }
+    } else if(!SetWindowRgn(window,nullptr,TRUE)) {
+        throw std::runtime_error("Cannot restore window shape");
+    }
 }
 AppearanceResult apply_appearance(HWND window,unsigned opacity,bool blur,bool high_contrast) {
     if(opacity<1||opacity>100) throw std::runtime_error("Window opacity must be from 1 to 100 percent");

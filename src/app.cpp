@@ -164,20 +164,15 @@ void App::position() {
     SetWindowPos(hwnd_,HWND_TOPMOST,monitor.rcWork.left+(monitor.rcWork.right-monitor.rcWork.left-w)/2,
         monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-h)/3,w,h,SWP_NOACTIVATE);
     MoveWindow(edit_,px(24),px(21),w-px(48),px(32),TRUE);
-    if(config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast) {
-        auto region=CreateRoundRectRgn(0,0,w+1,h+1,px(56),px(56));
-        if(region&&!SetWindowRgn(hwnd_,region,TRUE)) DeleteObject(region);
-    } else SetWindowRgn(hwnd_,nullptr,TRUE);
+    apply_window_shape(hwnd_,config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast,w,h,dpi_);
 }
 void App::apply_theme() {
     colors_=resolve_theme(system_theme(),config_.color_mode,config_.theme);
     fonts();
-    const int corner=DWMWCP_ROUND;
-    DwmSetWindowAttribute(hwnd_,DWMWA_WINDOW_CORNER_PREFERENCE,&corner,sizeof(corner));
     const bool glass=config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast;
     try {
         apply_glass_backdrop(hwnd_,false,colors_.dark);
-        apply_appearance(hwnd_,glass?100:config_.opacity,glass?false:config_.blur,colors_.high_contrast);
+        apply_appearance(hwnd_,config_.opacity,glass?false:config_.blur,colors_.high_contrast);
         glass_backdrop_=glass&&apply_glass_backdrop(hwnd_,config_.blur,colors_.dark);
     }
     catch(const std::exception& e) { report(wide(e.what())); }
@@ -316,7 +311,7 @@ void App::paint() {
         GdiFlush();
         const int selection_y=shown_.rows().empty()?-1:px(82)+(selected_-first_)*px(58);
         draw_glass_material(paint_pixels_,bounds.right,bounds.bottom,dpi_,colors_.dark,
-            config_.opacity,glass_backdrop_,selection_y,split);
+            glass_backdrop_,selection_y,split);
         material.assign(paint_pixels_,paint_pixels_+static_cast<size_t>(bounds.right)*bounds.bottom);
         prepare_glass_content(paint_pixels_,material);
     } else {

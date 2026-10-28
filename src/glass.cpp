@@ -20,14 +20,14 @@ DWORD opaque_color(DWORD pixel) {
 }
 }
 void draw_glass_material(DWORD* pixels,int width,int height,int dpi,bool dark,
-    unsigned opacity,bool transparent,int selection_y,int split) {
+    bool transparent,int selection_y,int split) {
     using namespace Gdiplus;
     Bitmap bitmap(width,height,width*4,PixelFormat32bppPARGB,reinterpret_cast<BYTE*>(pixels));
     Graphics g(&bitmap);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     // LiquidGlass2's GlassDark is #1A000000 (10% black). The light variant
-    // uses white tint for legibility. 80 retains the reference's tint density.
-    const BYTE tint=static_cast<BYTE>(std::min(255u,(dark?26u:76u)*opacity/80));
+    // uses white tint for legibility. Window opacity is applied separately.
+    const BYTE tint=dark?26:76;
     g.Clear(transparent?Color(tint,dark?0:255,dark?0:255,dark?0:255):
         dark?Color(255,20,20,20):Color(255,246,246,246));
     auto px=[&](int value) { return static_cast<float>(MulDiv(value,dpi,96)); };
