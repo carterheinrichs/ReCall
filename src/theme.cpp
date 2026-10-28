@@ -45,4 +45,27 @@ ThemeColors system_theme() {
     colors.dark=brightness(colors.background)<brightness(colors.foreground);
     return colors;
 }
+ThemeColors resolve_theme(ThemeColors colors,ColorMode mode,ThemeStyle style) {
+    if(colors.high_contrast) return colors;
+    if(mode!=ColorMode::System) {
+        colors.dark=mode==ColorMode::Dark;
+        colors.background=colors.dark?RGB(0,0,0):RGB(255,255,255);
+        colors.foreground=colors.dark?RGB(255,255,255):RGB(0,0,0);
+    }
+    if(style==ThemeStyle::LiquidGlass) {
+        colors.background=colors.dark?RGB(25,34,48):RGB(230,240,250);
+        colors.foreground=colors.dark?RGB(242,247,255):RGB(20,37,58);
+        colors.selection=colors.dark?RGB(57,91,132):RGB(192,217,245);
+        colors.selection_text=colors.foreground;
+    } else if(style==ThemeStyle::ClassicWindows) {
+        colors.background=colors.dark?RGB(45,48,52):RGB(212,208,200);
+        colors.foreground=colors.dark?RGB(245,245,245):RGB(0,0,0);
+        colors.selection=colors.dark?RGB(30,72,120):RGB(10,36,106);
+        colors.selection_text=RGB(255,255,255);
+    }
+    colors.muted=blend(colors.background,colors.foreground,65);
+    colors.border=blend(colors.background,colors.foreground,20);
+    return colors;
+}
+
 }

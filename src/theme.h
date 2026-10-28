@@ -1,5 +1,5 @@
 #pragma once
-#include "common.h"
+#include "config.h"
 
 namespace recall {
 struct ThemeColors {
@@ -9,4 +9,5 @@ struct ThemeColors {
     bool high_contrast=false;
 };
 ThemeColors system_theme();
+ThemeColors resolve_theme(ThemeColors system,ColorMode mode,ThemeStyle style);
 }

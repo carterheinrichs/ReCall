@@ -1,5 +1,8 @@
 #include "appearance.h"
 #include "config.h"
+#include "theme.h"
+#include "json.h"
+#include <fstream>
 #include <iostream>
 
 using namespace recall;
@@ -9,12 +12,41 @@ int main() {
     try {
         auto defaults=Config::parse("{}");
         check(defaults.opacity==80&&defaults.blur,"existing configuration gets 80 percent opacity and blur by default");
+        check(defaults.theme==ThemeStyle::Default&&defaults.color_mode==ColorMode::System,"default look follows Windows");
+        auto baseline=system_theme();
+        auto unchanged=resolve_theme(baseline,ColorMode::System,ThemeStyle::Default);
+        check(unchanged.background==baseline.background&&unchanged.selection==baseline.selection&&unchanged.border==baseline.border,"default palette unchanged");
+        baseline.high_contrast=false;
+        for(auto style:{ThemeStyle::Default,ThemeStyle::LiquidGlass,ThemeStyle::ClassicWindows}) {
+            auto light=resolve_theme(baseline,ColorMode::Light,style),dark=resolve_theme(baseline,ColorMode::Dark,style);
+            check(!light.dark&&dark.dark&&light.background!=dark.background,"each theme supports explicit light and dark");
+            baseline.high_contrast=true;
+            auto contrast=resolve_theme(baseline,ColorMode::Dark,style);
+            check(contrast.background==baseline.background&&contrast.selection==baseline.selection,"contrast colors override theme");
+            baseline.high_contrast=false;
+        }
+        check(Config::parse(R"({"appearance":{"theme":"liquid_glass","mode":"dark"}})").theme==ThemeStyle::LiquidGlass,"glass setting parsed");
+        auto classic=Config::parse(R"({"appearance":{"theme":"classic_windows","mode":"light"}})");
+        check(classic.theme==ThemeStyle::ClassicWindows&&classic.color_mode==ColorMode::Light,"classic and mode settings parsed");
+        auto directory=fs::temp_directory_path()/(L"ReCall-theme-test-"+std::to_wstring(GetCurrentProcessId()));
+        fs::create_directories(directory);
+        try {
+            { std::ofstream out(directory/L"config.json"); out << R"({"hotkey":{"key":"F2"},"custom":{"quoted":"a\\b\n\"c","array":[null,2,true]},"appearance":{"future":true}})"; }
+            classic.state=directory; classic.save_appearance();
+            std::ifstream in(directory/L"config.json"); std::string saved((std::istreambuf_iterator<char>(in)),{});
+            auto roundtrip=Config::parse(saved); auto json=Json::parse(saved);
+            check(roundtrip.theme==classic.theme&&roundtrip.color_mode==classic.color_mode&&roundtrip.key==VK_F2,"saved appearance round trips and preserves hotkey");
+            check(json.get("custom")->get("array")->array().size()==3&&json.get("appearance")->get("future"),"saving preserves unknown configuration fields");
+            in.close();
+        } catch(...) { fs::remove_all(directory); throw; }
+        fs::remove_all(directory);
         auto custom=Config::parse(R"({"appearance":{"opacity":95,"blur":false}})");
         check(custom.opacity==95&&!custom.blur,"custom appearance settings parsed");
         check(Config::parse(R"({"appearance":{"opacity":100}})").blur,"partial settings retain defaults");
         for(auto invalid:{R"({"appearance":{"opacity":0}})",R"({"appearance":{"opacity":101}})",
             R"({"appearance":{"opacity":79.5}})",R"({"appearance":{"opacity":"80"}})",
-            R"({"appearance":{"blur":1}})",R"({"appearance":{"blur":"true"}})"}) {
+            R"({"appearance":{"mode":"sepia"}})",R"({"appearance":{"theme":"unknown"}})",
+            R"({"appearance":{"mode":true}})",R"({"appearance":{"theme":null}})",R"({"appearance":{"blur":1}})",R"({"appearance":{"blur":"true"}})"}) {
             bool rejected=false; try { Config::parse(invalid); } catch(const std::exception&) { rejected=true; }
             check(rejected,"invalid appearance setting rejected");
         }

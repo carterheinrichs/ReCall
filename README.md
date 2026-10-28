@@ -50,9 +50,13 @@ Created automatically on first launch:
   "prefixes": { "clipboard": ">", "emoji": ":" },
   "auto_paste": true,
   "history_limit": 1000,
-  "appearance": { "opacity": 80, "blur": true }
+  "appearance": { "mode": "system", "theme": "default", "opacity": 80, "blur": true }
 }
 ```
+
+Right-click the ReCall tray icon > **Settings** to choose **Color mode** (Follow Windows, Light, Dark), **Theme** (Default, Liquid Glass, Classic Windows), opacity, and blur. Changes apply immediately and save to `config.json`. Classic Windows always uses an opaque surface without blur, preserving your opacity/blur preferences for other themes. Default preserves the original appearance. Glass adds a frosted blue palette, reflective rim, and rounded selections. Classic combines Windows 95 raised borders and Tahoma with Windows 7-inspired blue selections. Both extra themes support light and dark.
+
+`appearance.mode` accepts `system`, `light`, or `dark`; `appearance.theme` accepts `default`, `liquid_glass`, or `classic_windows`. Missing fields preserve the original system-following Default theme.
 
 Restart ReCall after editing `config.json`. Modifiers are `win`, `ctrl`, `alt`, and `shift`; keys are `SPACE`, `A`–`Z`, `0`–`9`, or `F1`–`F24`. Prefixes can contain multiple characters but must be nonempty and cannot prefix one another. Invalid configuration produces a startup error rather than silently resetting settings.
 
@@ -80,7 +84,7 @@ The listener captures changes while ReCall is running. Worker jobs coalesce supe
 | Prefix routing and proximity/word-boundary fuzzy scoring | `src/search.cpp` |
 | Embedded Unicode 16 emoji data | `assets/emoji.json` |
 
-The palette is created once, hidden, and reused. It is a borderless topmost tool window with per-monitor DPI handling, double-buffered native drawing, and Windows 11 rounded corners. It follows **Windows Settings → Personalization → Colors → Choose your mode** (the app mode if Windows is set to Custom). Background and text colors come from Windows UISettings, with standard Windows selection colors. Configurable opacity and optional native blur are layered over those colors; there is no custom color theme or Mica backdrop. System theme changes apply while ReCall is running; Windows contrast themes use their system-provided colors.
+The palette is created once, hidden, and reused. It is a borderless topmost tool window with per-monitor DPI handling, double-buffered native drawing, and Windows 11 rounded corners. It follows **Windows Settings → Personalization → Colors → Choose your mode** (the app mode if Windows is set to Custom). Background and text colors come from Windows UISettings, with standard Windows selection colors. Configurable opacity and optional native blur are layered over those colors; optional Glass and Classic styles are isolated from the Default theme. System theme changes apply while ReCall is running; Windows contrast themes use their system-provided colors.
 
 A background worker owns clipboard capture, database work, search, and clipboard payload preparation. A separate coalescing index worker publishes immutable application catalogs, so index refreshes cannot block capture or search. The newest 100 clipboard summaries are preloaded at startup and refreshed after each capture; text previews are bounded to 12,000 UTF-16 code units, and opening history shares the immutable list without copying it. Full text is fetched by ID only when executing an entry. Filtered clipboard queries use linear subsequence matching over stored previews, stop at 100 matches, and cancel superseded searches. Application and emoji ranking reuses scoring buffers, selects only the best 100 results, and cancels during scoring. A separate preview worker loads only visible/selected image previews after the list appears, prioritizes the selected item, and keeps a 32-entry thumbnail cache across route changes. Stale search/preview generations are discarded. The foreground show path does not wait for indexing, SQLite, or PNG decoding. Applications are enumerated at startup and on tray-menu refresh; links are inspected using `IShellLinkW` and launched through their original `.lnk` so arguments, working directories, and packaged/advertised targets are preserved.
 

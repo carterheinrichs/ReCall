@@ -150,8 +150,9 @@ void App::capture() {
 }
 void App::fonts() {
     if(font_) DeleteObject(font_); if(small_font_) DeleteObject(small_font_); if(emoji_font_) DeleteObject(emoji_font_);
-    font_=CreateFontW(-px(17),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
-    small_font_=CreateFontW(-px(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
+    const auto face=config_.theme==ThemeStyle::ClassicWindows&&!colors_.high_contrast?L"Tahoma":L"Segoe UI";
+    font_=CreateFontW(-px(17),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,face);
+    small_font_=CreateFontW(-px(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,face);
     emoji_font_=CreateFontW(-px(28),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI Emoji");
     if(edit_) SendMessageW(edit_,WM_SETFONT,reinterpret_cast<WPARAM>(font_),TRUE);
 }
@@ -164,12 +165,16 @@ void App::position() {
     MoveWindow(edit_,px(24),px(21),w-px(48),px(32),TRUE);
 }
 void App::apply_theme() {
-    colors_=system_theme();
+    colors_=resolve_theme(system_theme(),config_.color_mode,config_.theme);
+    fonts();
+    const bool classic=config_.theme==ThemeStyle::ClassicWindows&&!colors_.high_contrast;
+    const int corner=classic?DWMWCP_DONOTROUND:DWMWCP_ROUND;
+    DwmSetWindowAttribute(hwnd_,DWMWA_WINDOW_CORNER_PREFERENCE,&corner,sizeof(corner));
     BOOL dark=colors_.dark;
     DwmSetWindowAttribute(hwnd_,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
     const int backdrop=DWMSBT_NONE;
     DwmSetWindowAttribute(hwnd_,DWMWA_SYSTEMBACKDROP_TYPE,&backdrop,sizeof(backdrop));
-    try { apply_appearance(hwnd_,config_.opacity,config_.blur,colors_.high_contrast); }
+    try { apply_appearance(hwnd_,classic?100:config_.opacity,classic?false:config_.blur,colors_.high_contrast); }
     catch(const std::exception& e) { report(wide(e.what())); }
     RedrawWindow(hwnd_,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
 }
@@ -192,10 +197,36 @@ void App::menu() {
     HMENU m=CreatePopupMenu(); AppendMenuW(m,MF_STRING,1,L"Open ReCall");
     AppendMenuW(m,MF_STRING,2,L"Edit configuration (restart to apply)");
     AppendMenuW(m,MF_STRING,3,L"Refresh application index"); AppendMenuW(m,MF_SEPARATOR,0,nullptr); AppendMenuW(m,MF_STRING,4,L"Exit");
+    HMENU settings=CreatePopupMenu(),modes=CreatePopupMenu(),themes=CreatePopupMenu(),opacity=CreatePopupMenu();
+    const wchar_t* mode_names[]={L"Follow Windows",L"Light",L"Dark"};
+    const wchar_t* theme_names[]={L"Default",L"Liquid Glass",L"Classic Windows (95 / 7)"};
+    for(int i=0;i<3;++i) {
+        AppendMenuW(modes,MF_STRING|(static_cast<int>(config_.color_mode)==i?MF_CHECKED:0),100+i,mode_names[i]);
+        AppendMenuW(themes,MF_STRING|(static_cast<int>(config_.theme)==i?MF_CHECKED:0),110+i,theme_names[i]);
+    }
+    for(unsigned value:{60u,80u,90u,100u}) {
+        auto label=std::to_wstring(value)+L"%";
+        AppendMenuW(opacity,MF_STRING|(config_.opacity==value?MF_CHECKED:0),200+value,label.c_str());
+    }
+    AppendMenuW(settings,MF_POPUP,reinterpret_cast<UINT_PTR>(modes),L"Color mode");
+    AppendMenuW(settings,MF_POPUP,reinterpret_cast<UINT_PTR>(themes),L"Theme");
+    AppendMenuW(settings,MF_POPUP,reinterpret_cast<UINT_PTR>(opacity),L"Opacity (Default / Glass)");
+    AppendMenuW(settings,MF_STRING|(config_.blur?MF_CHECKED:0),120,L"Blur (Default / Glass)");
+    InsertMenuW(m,1,MF_BYPOSITION|MF_POPUP,reinterpret_cast<UINT_PTR>(settings),L"Settings");
     POINT p{}; GetCursorPos(&p); SetForegroundWindow(hwnd_);
     int command=TrackPopupMenu(m,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,hwnd_,nullptr); DestroyMenu(m);
     PostMessageW(hwnd_,WM_NULL,0,0);
-    if(command==1) toggle();
+    if((command>=100&&command<=102)||(command>=110&&command<=112)||command==120||
+        command==260||command==280||command==290||command==300) {
+        auto updated=config_;
+        if(command>=100&&command<=102) updated.color_mode=static_cast<ColorMode>(command-100);
+        else if(command>=110&&command<=112) updated.theme=static_cast<ThemeStyle>(command-110);
+        else if(command==120) updated.blur=!updated.blur;
+        else updated.opacity=command-200;
+        try { updated.save_appearance(); config_=std::move(updated); apply_theme(); }
+        catch(const std::exception& e) { report(wide(e.what())); }
+    }
+    else if(command==1) toggle();
     else if(command==2) ShellExecuteW(hwnd_,L"open",(config_.state/L"config.json").c_str(),nullptr,nullptr,SW_SHOWNORMAL);
     else if(command==3) refresh(); else if(command==4) SendMessageW(hwnd_,WM_CLOSE,0,0);
 }
@@ -293,6 +324,23 @@ void App::paint() {
         fill(dc,bounds,background); EndPaint(hwnd_,&ps); return;
     }
     HDC buffer=paint_dc_; fill(buffer,bounds,background);
+    if(!colors_.high_contrast&&config_.theme==ThemeStyle::LiquidGlass) {
+        // A soft specular wash and inset rim give the frosted surface depth.
+        for(int y=0;y<px(76);++y) {
+            const int amount=MulDiv(px(76)-y,colors_.dark?14:65,px(76));
+            auto shine=[&](BYTE c) { return c+(255-c)*amount/100; };
+            fill(buffer,{0,y,bounds.right,y+1},RGB(shine(GetRValue(background)),shine(GetGValue(background)),shine(GetBValue(background))));
+        }
+        auto pen=CreatePen(PS_SOLID,px(1),colors_.dark?RGB(104,128,155):RGB(255,255,255));
+        auto oldpen=SelectObject(buffer,pen); auto oldbrush=SelectObject(buffer,GetStockObject(NULL_BRUSH));
+        RoundRect(buffer,px(2),px(2),bounds.right-px(2),bounds.bottom-px(2),px(22),px(22));
+        SelectObject(buffer,oldbrush); SelectObject(buffer,oldpen); DeleteObject(pen);
+    } else if(!colors_.high_contrast&&config_.theme==ThemeStyle::ClassicWindows) {
+        RECT frame=bounds; DrawEdge(buffer,&frame,EDGE_RAISED,BF_RECT);
+        RECT search{px(18),px(15),bounds.right-px(18),px(59)};
+        DrawEdge(buffer,&search,EDGE_SUNKEN,BF_RECT);
+        fill(buffer,{px(4),bounds.bottom-px(49),bounds.right-px(4),bounds.bottom-px(46)},colors_.border);
+    }
     int split=bounds.right*3/5; fill(buffer,{px(16),px(70),bounds.right-px(16),px(71)},colors_.border);
     fill(buffer,{split,px(84),split+1,bounds.bottom-px(48)},colors_.border);
     int rows=std::max(1,static_cast<int>((bounds.bottom-px(110))/px(58)));
@@ -311,7 +359,18 @@ void App::paint() {
         const bool selected=idx==selected_;
         const auto row_text=selected?colors_.selection_text:foreground;
         const auto row_detail=selected?colors_.selection_text:muted;
-        if(selected) fill(buffer,{px(12),y,split-px(12),y+px(55)},colors_.selection);
+        if(selected) {
+            RECT row_bounds{px(12),y,split-px(12),y+px(55)};
+            if(config_.theme==ThemeStyle::LiquidGlass&&!colors_.high_contrast) {
+                auto brush=CreateSolidBrush(colors_.selection); auto oldbrush=SelectObject(buffer,brush);
+                auto pen=CreatePen(PS_SOLID,1,colors_.border); auto oldpen=SelectObject(buffer,pen);
+                RoundRect(buffer,row_bounds.left,row_bounds.top,row_bounds.right,row_bounds.bottom,px(16),px(16));
+                SelectObject(buffer,oldpen); SelectObject(buffer,oldbrush); DeleteObject(pen); DeleteObject(brush);
+            } else {
+                fill(buffer,row_bounds,colors_.selection);
+                if(config_.theme==ThemeStyle::ClassicWindows&&!colors_.high_contrast) { InflateRect(&row_bounds,-px(3),-px(3)); DrawFocusRect(buffer,&row_bounds); }
+            }
+        }
         int left=px(28);
         if(item.kind==Kind::App) { image(item,{left,y+px(11),left+px(32),y+px(43)}); left+=px(44); }
         if(item.kind==Kind::Image) { image(item,{left,y+px(5),left+px(42),y+px(47)}); left+=px(54); }
