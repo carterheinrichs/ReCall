@@ -40,7 +40,7 @@ target_include_directories(ReCall PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/gener
 target_compile_definitions(ReCall PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
   _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 target_link_libraries(ReCall PRIVATE sqlite3 comctl32 dwmapi gdiplus ole32 shell32 shlwapi
-  user32 gdi32 advapi32 windowsapp d2d1 dwrite CoreMessaging dxguid)
+  user32 gdi32 advapi32 windowsapp d2d1 dwrite CoreMessaging dxguid windowscodecs)
 if(MSVC)
   target_compile_options(ReCall PRIVATE /W4 /permissive- /utf-8 /EHsc)
   target_link_options(ReCall PRIVATE /MANIFEST:EMBED /MANIFESTINPUT:${CMAKE_CURRENT_BINARY_DIR}/generated/app.manifest)
@@ -68,7 +68,7 @@ if(BUILD_TESTING)
   target_include_directories(preview_tests PRIVATE src)
   target_compile_definitions(preview_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_options(preview_tests PRIVATE /utf-8 /EHsc)
-  target_link_libraries(preview_tests PRIVATE gdiplus ole32 shell32)
+  target_link_libraries(preview_tests PRIVATE gdiplus ole32 shell32 windowscodecs)
   add_test(NAME preview_tests COMMAND preview_tests)
   add_executable(clipboard_tests tests/clipboard_tests.cpp src/clipboard.cpp)
   target_include_directories(clipboard_tests PRIVATE src)

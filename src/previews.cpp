@@ -2,16 +2,43 @@
 #include <algorithm>
 #include <map>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <commoncontrols.h>
+#include <wincodec.h>
+#include <wrl/client.h>
 
 namespace recall {
 namespace {
 PreviewLoader::Bitmap load_icon(const std::wstring& path) {
-    // Preserve custom shortcut icons by asking the Shell about the original link.
+    // Use the original link's icon index to retain custom icons, but request the
+    // base image without the shortcut overlay that SHGFI_ICON can add.
     SHFILEINFOW info{};
-    if(!SHGetFileInfoW(path.c_str(),0,&info,sizeof(info),SHGFI_ICON|SHGFI_LARGEICON)) return {};
-    auto bitmap=PreviewLoader::Bitmap(Gdiplus::Bitmap::FromHICON(info.hIcon));
-    DestroyIcon(info.hIcon);
+    if(!SHGetFileInfoW(path.c_str(),0,&info,sizeof(info),SHGFI_SYSICONINDEX)) return {};
+    Microsoft::WRL::ComPtr<IImageList> images;
+    if(FAILED(SHGetImageList(SHIL_EXTRALARGE,IID_PPV_ARGS(&images)))) return {};
+    HICON icon{};
+    if(FAILED(images->GetIcon(info.iIcon,ILD_TRANSPARENT,&icon))) return {};
+    // GDI+ FromHICON loses alpha for some 32-bit icons. WIC understands both
+    // alpha icons and legacy AND masks, including legitimate black pixels.
+    Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+    Microsoft::WRL::ComPtr<IWICBitmap> source;
+    HRESULT result=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory));
+    if(SUCCEEDED(result)) result=factory->CreateBitmapFromHICON(icon,&source);
+    DestroyIcon(icon);
+    if(FAILED(result)) return {};
+    Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+    if(FAILED(factory->CreateFormatConverter(&converter))||
+       FAILED(converter->Initialize(source.Get(),GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom))) return {};
+    UINT width{},height{};
+    if(FAILED(converter->GetSize(&width,&height))||!width||!height) return {};
+    auto bitmap=std::make_shared<Gdiplus::Bitmap>(width,height,PixelFormat32bppPARGB);
     if(!bitmap||bitmap->GetLastStatus()!=Gdiplus::Ok) return {};
+    Gdiplus::Rect bounds(0,0,width,height);
+    Gdiplus::BitmapData data{};
+    if(bitmap->LockBits(&bounds,Gdiplus::ImageLockModeWrite,PixelFormat32bppPARGB,&data)!=Gdiplus::Ok) return {};
+    result=converter->CopyPixels(nullptr,data.Stride,data.Stride*height,static_cast<BYTE*>(data.Scan0));
+    bitmap->UnlockBits(&data);
+    if(FAILED(result)) return {};
     return bitmap;
 }
 PreviewLoader::Bitmap load_preview(const std::wstring& path) {

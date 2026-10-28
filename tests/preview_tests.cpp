@@ -2,6 +2,9 @@
 #include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <fstream>
+#include <shobjidl.h>
+#include <wrl/client.h>
 
 using namespace recall;
 int main() {
@@ -53,6 +56,57 @@ int main() {
             }
             auto reused=wait(5,second);
             check(reused.bitmap==b.bitmap,"cache survives route changes");
+        }
+        {
+            // A transparent icon containing opaque black and semitransparent red.
+            // Comparing its shortcut also catches accidental Shell arrow overlays.
+            const auto custom=temp/L"transparent.ico",shortcut=temp/L"custom.lnk";
+            {
+                std::ofstream file(custom,std::ios::binary);
+                const WORD header[]{0,1,1};
+                file.write(reinterpret_cast<const char*>(header),sizeof(header));
+                const BYTE dimensions[]{32,32,0,0};
+                file.write(reinterpret_cast<const char*>(dimensions),sizeof(dimensions));
+                const WORD format[]{1,32};
+                const DWORD entry[]{40+32*32*4+32*4,22};
+                file.write(reinterpret_cast<const char*>(format),sizeof(format));
+                file.write(reinterpret_cast<const char*>(entry),sizeof(entry));
+                BITMAPINFOHEADER dib{}; dib.biSize=40; dib.biWidth=32; dib.biHeight=64; dib.biPlanes=1; dib.biBitCount=32;
+                file.write(reinterpret_cast<const char*>(&dib),sizeof(dib));
+                for(int y=0;y<32;++y) for(int x=0;x<32;++x) {
+                    DWORD pixel=x>=8&&x<24&&y>=8&&y<24?(x<16?0xff000000:0x80800000):0;
+                    file.write(reinterpret_cast<const char*>(&pixel),4);
+                }
+                for(int y=0;y<32;++y) { DWORD mask=0; file.write(reinterpret_cast<const char*>(&mask),4); }
+            }
+            ComInit com;
+            Microsoft::WRL::ComPtr<IShellLinkW> link;
+            check(SUCCEEDED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&link))),"created shortcut fixture");
+            if(!link) throw std::runtime_error("Shell link unavailable");
+            link->SetPath(L"C:\\Windows\\notepad.exe"); link->SetIconLocation(custom.c_str(),0);
+            Microsoft::WRL::ComPtr<IPersistFile> persist; link.As(&persist);
+            check(persist&&SUCCEEDED(persist->Save(shortcut.c_str(),TRUE)),"saved custom icon shortcut");
+            PreviewLoader loader([&](uint64_t gen,const std::wstring& path,PreviewLoader::Bitmap bitmap) {
+                { std::lock_guard lock(mutex); updates.push_back({gen,path,std::move(bitmap),std::this_thread::get_id()}); }
+                cv.notify_all();
+            },PreviewLoader::Mode::AppIcons);
+            loader.submit(20,{custom.wstring(),shortcut.wstring()});
+            auto direct=wait(20,custom.wstring()).bitmap,linked=wait(20,shortcut.wstring()).bitmap;
+            check(direct&&linked,"custom icon and shortcut extracted");
+            if(direct&&linked) {
+                Gdiplus::Color corner,black,red;
+                direct->GetPixel(0,0,&corner);
+                direct->GetPixel(direct->GetWidth()*3/8,direct->GetHeight()/2,&black);
+                direct->GetPixel(direct->GetWidth()*5/8,direct->GetHeight()/2,&red);
+                check(corner.GetA()==0,"icon background remains transparent");
+                check(black.GetA()>=250&&black.GetR()<=2,"opaque black artwork preserved");
+                check(red.GetA()>100&&red.GetA()<160,"partial alpha preserved");
+                bool equal=direct->GetWidth()==linked->GetWidth()&&direct->GetHeight()==linked->GetHeight();
+                for(UINT y=0;equal&&y<direct->GetHeight();++y) for(UINT x=0;equal&&x<direct->GetWidth();++x) {
+                    Gdiplus::Color a,b; direct->GetPixel(x,y,&a); linked->GetPixel(x,y,&b); equal=a.GetValue()==b.GetValue();
+                }
+                check(equal,"shortcut retains custom artwork without arrow overlay");
+            }
         }
         {
             wchar_t system[MAX_PATH]{}; GetSystemDirectoryW(system,MAX_PATH);
