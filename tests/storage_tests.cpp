@@ -95,6 +95,17 @@ int main() {
             check(matches.empty(),"superseded search can cancel while scanning");
         }
         {
+            Store usage(state,100);
+            check(usage.app_usage().empty(),"usage starts empty on existing database");
+            usage.record_app_launch(L"editor"); usage.record_app_launch(L"editor");
+            usage.record_app_launch(L"browser"); usage.record_app_launch(L"");
+            check(usage.app_usage().size()==2&&usage.app_usage().at(L"editor").launches==2,"launch counts are independent and ignore empty identities");
+        }
+        {
+            Store usage(state,100);
+            check(usage.app_usage().at(L"editor").launches==2&&usage.app_usage().at(L"editor").last_used>0,"usage survives reopening the database");
+        }
+        {
             Store reduced(state,1);
             Item text; text.kind=Kind::Text; text.value=L"only retained entry"; reduced.insert(text);
             auto rows=reduced.recent();

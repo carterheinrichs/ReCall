@@ -1,9 +1,9 @@
 #include "catalog.h"
+#include "app_identity.h"
 #include "json.h"
 #include <shobjidl.h>
 #include <algorithm>
 #include <cwctype>
-#include <set>
 
 namespace recall {
 namespace {
@@ -18,10 +18,10 @@ std::wstring reg_string(HKEY key,const wchar_t* name) {
 }
 }
 std::vector<Item> index_apps(const std::function<bool()>& cancelled) {
-    std::vector<Item> out; std::set<std::wstring> seen;
+    std::vector<Item> out;
     auto add=[&](Item i) {
-        auto key=lower(i.title)+L"\n"+lower(i.value);
-        if(seen.insert(key).second) out.push_back(std::move(i));
+        if(i.app_key.empty()) i.app_key=app_identity(i.value,i.arguments,i.working_directory);
+        add_application(out,std::move(i));
     };
     const KNOWNFOLDERID folders[]={FOLDERID_Desktop,FOLDERID_PublicDesktop,FOLDERID_Programs,FOLDERID_CommonPrograms};
     for(const auto& folder:folders) {
@@ -41,7 +41,17 @@ std::vector<Item> index_apps(const std::function<bool()>& cancelled) {
                         link->GetPath(target,32768,&data,SLGP_RAWPATH);
                         // Launch the original shell link to preserve advertised and packaged-app targets.
                         Item i; i.title=path.stem().wstring(); i.value=path.wstring();
-                        i.detail=*target?target:L"Windows application"; add(std::move(i));
+                        i.detail=*target?target:L"Windows application";
+                        wchar_t args[32768]{},directory[32768]{}; int show=SW_SHOWNORMAL;
+                        ComPtr<IShellLinkDataList> flags; DWORD bits{};
+                        const bool inspected=SUCCEEDED(link->GetArguments(args,32768))&&
+                            SUCCEEDED(link->GetWorkingDirectory(directory,32768))&&SUCCEEDED(link->GetShowCmd(&show))&&
+                            SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(flags.put())))&&SUCCEEDED(flags->GetFlags(&bits));
+                        // Only conventional executable links are safe to merge by target.
+                        if(inspected&&*target&&lower(fs::path(target).extension().wstring())==L".exe"&&
+                            !(bits&(SLDF_HAS_DARWINID|SLDF_RUN_WITH_SHIMLAYER)))
+                            i.app_key=app_identity(target,args,directory,show,(bits&SLDF_RUNAS_USER)!=0);
+                        add(std::move(i));
                     }
                 }
             } else if(ext==L".exe"||ext==L".appref-ms") {

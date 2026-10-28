@@ -1,3 +1,4 @@
+#include "app_identity.h"
 #include "search.h"
 #include "json.h"
 #include "editing.h"
@@ -86,5 +87,28 @@ int main() {
         check(fuzzy_score(query,candidate)==expected,"optimized score agrees with exhaustive alignments");
         check(fuzzy_matches(query,candidate)==(expected>=0),"linear filtering agrees with scored matching");
     }
+    Item first; first.title=L"Editor"; first.value=L"desktop.lnk";
+    first.app_key=app_identity(L"C:/Apps/Editor.exe",L"",L"");
+    Item duplicate=first; duplicate.title=L"CodeAlias"; duplicate.value=L"start.lnk";
+    duplicate.app_key=app_identity(L"c:\\apps\\EDITOR.exe",L"",L"C:/Apps");
+    std::vector<Item> apps; add_application(apps,first); add_application(apps,duplicate);
+    check(apps.size()==1&&apps[0].value==first.value,"duplicate targets retain original shortcut");
+    check(ranked(apps,L"CodeAlias").size()==1,"merged application alias stays searchable");
+    duplicate.app_key=app_identity(L"C:/Apps/Editor.exe",L"--profile work",L"");
+    add_application(apps,duplicate);
+    check(apps.size()==2,"different launch arguments remain separate");
+    check(app_identity(L"a.exe",L"",L"",1,true)!=app_identity(L"a.exe",L"",L""),"elevated launches stay separate");
+    check(app_identity(L"a.exe",L"",L"C:/one")!=app_identity(L"a.exe",L"",L"C:/two"),"working directories stay separate");
+    Item frequent=first; frequent.title=L"Editor Beta"; frequent.app_key=L"frequent";
+    AppUsageMap usage{{L"frequent",{100,1000000}}};
+    check(ranked({first,frequent},L"",100,{},usage,1000000)[0].app_key==L"frequent","empty app query recalls frequent recent launches");
+    check(ranked({first,frequent},L"zzzz",100,{},usage,1000000).empty(),"usage never introduces nonmatches");
+    check(ranked({first,frequent},L"Ed",100,{},usage,1000000)[0].app_key==L"frequent","usage boosts similar name matches");
+    Item exact=first; exact.title=L"Visual";
+    Item scattered=frequent; scattered.title=L"V i s u a l";
+    check(ranked({scattered,exact},L"Visual",100,{},usage,1000000)[0].title==L"Visual","strong name match outranks maximum usage boost");
+    Item recent=first; recent.app_key=L"recent";
+    usage={{first.app_key,{1,1}},{recent.app_key,{1,1000000}}};
+    check(ranked({first,recent},L"",100,{},usage,1000000)[0].app_key==L"recent","recency distinguishes equally frequent applications");
     std::cout << (failures?"Core checks failed":"Core checks passed") << '\n'; return failures?1:0;
 }

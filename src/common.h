@@ -45,6 +45,8 @@ enum class Kind { App, Text, Image, Emoji };
 struct Item {
     Kind kind = Kind::App;
     std::wstring title, detail, value, arguments, working_directory;
+    std::wstring app_key;
+    std::vector<std::wstring> app_aliases;
     long long id{};
 };
 }

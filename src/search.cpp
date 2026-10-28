@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <limits>
+#include <ctime>
 
 namespace recall {
 bool fuzzy_matches(std::wstring_view query,std::wstring_view text,const Cancelled& cancelled) {
@@ -61,6 +62,14 @@ Query route_query(std::wstring_view input,std::wstring_view clipboard,std::wstri
     return {r,std::wstring(input)};
 }
 namespace {
+int app_score(std::wstring_view query,std::wstring_view title,const Cancelled& cancelled) {
+    const auto score=fuzzy_score(query,title,cancelled);
+    if(score<0||query.empty()) return score;
+    auto equal=[](wchar_t a,wchar_t b){return towlower(a)==towlower(b);};
+    if(query.size()<=title.size()&&std::equal(query.begin(),query.end(),title.begin(),equal))
+        return score+(query.size()==title.size()?10000:1000);
+    return score;
+}
 std::wstring emoji_words(std::wstring_view text) {
     std::wstring out;
     for(auto c:text) {
@@ -88,7 +97,7 @@ int emoji_score(std::wstring_view query,const Item& item,const Cancelled& cancel
     return std::min(999,std::max(fuzzy_score(words,name,cancelled),fuzzy_score(words,tags,cancelled)));
 }
 }
-std::vector<Item> ranked(const std::vector<Item>& items,std::wstring_view query,size_t limit,const Cancelled& cancelled) {
+std::vector<Item> ranked(const std::vector<Item>& items,std::wstring_view query,size_t limit,const Cancelled& cancelled,const AppUsageMap& usage,long long now) {
     struct Hit { int score; size_t index; };
     std::vector<Hit> hits;
     if(!limit) return {};
@@ -97,8 +106,23 @@ std::vector<Item> ranked(const std::vector<Item>& items,std::wstring_view query,
         if(cancelled&&cancelled()) return {};
         // Long clipboard entries remain searchable without quadratic work over megabytes of data.
         auto title=std::wstring_view(items[i].title).substr(0,8192);
-        int s=items[i].kind==Kind::Emoji?emoji_score(query,items[i],cancelled):fuzzy_score(query,title,cancelled);
-        if(s>=0) hits.push_back({s,i});
+        int s=items[i].kind==Kind::Emoji?emoji_score(query,items[i],cancelled):
+            items[i].kind==Kind::App?app_score(query,title,cancelled):fuzzy_score(query,title,cancelled);
+        if(items[i].kind==Kind::App) for(const auto& alias:items[i].app_aliases)
+            s=std::max(s,app_score(query,alias,cancelled));
+        if(s>=0) {
+            if(items[i].kind==Kind::App) {
+                auto found=usage.find(items[i].app_key);
+                if(found!=usage.end()) {
+                    const auto& u=found->second;
+                    int frequency=0;
+                    for(auto n=u.launches;n>0&&frequency<12;n/=2) frequency+=2;
+                    const auto age=std::max(0LL,(now?now:static_cast<long long>(std::time(nullptr)))-u.last_used);
+                    s+=frequency+(u.launches>0?(age<86400?12:age<604800?8:age<2592000?4:0):0);
+                }
+            }
+            hits.push_back({s,i});
+        }
     }
     const auto count=std::min(limit,hits.size());
     std::partial_sort(hits.begin(),hits.begin()+count,hits.end(),[](auto a,auto b){

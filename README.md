@@ -29,6 +29,10 @@ ReCall starts hidden with a notification-area icon. Press **Win+Space** or click
 
 Click a result to select it; double-click to execute. Images have inline thumbnails and a larger preview. Clipboard text has a multiline preview. The tray menu provides configuration, application-index refresh, and Exit.
 
+Application results learn from successful launches made through ReCall. A bounded frequency and recency boost favors commonly used apps, including when the search box is empty; unmatched apps are never included. Usage is stored locally in `recall.db` and survives restarts and index refreshes.
+
+Duplicate application entries are merged by normalized launch target, arguments, working directory, window mode, and elevation setting. ReCall keeps the original shortcut for launching and retains alternate names for searching. Shortcuts with distinct launch settings and unresolved/advertised shortcuts remain separate.
+
 ## Configuration and storage
 
 Created automatically on first launch:

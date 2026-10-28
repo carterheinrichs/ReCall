@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "search.h"
 #include <functional>
 #include <optional>
 struct sqlite3;
@@ -16,6 +17,8 @@ public:
     Store(const Store&)=delete;
     Store& operator=(const Store&)=delete;
     void insert(const Item& item);
+    void record_app_launch(std::wstring_view key);
+    AppUsageMap app_usage();
     std::optional<Item> load(long long id);
     // Lists contain bounded display text; load(id) retrieves the complete paste payload.
     std::vector<Item> recent(size_t limit=0);

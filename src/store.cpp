@@ -32,6 +32,7 @@ Store::Store(const fs::path& state,unsigned limit):media_(state/L"clips_media"),
     try {
         sqlite3_busy_timeout(db_,3000);
         exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"
+             "CREATE TABLE IF NOT EXISTS app_usage (app_key TEXT PRIMARY KEY,launches INTEGER NOT NULL,last_used INTEGER NOT NULL);"
              "CREATE TABLE IF NOT EXISTS clipboard_items (id INTEGER PRIMARY KEY AUTOINCREMENT,"
              "type TEXT NOT NULL CHECK(type IN ('text','image')), content TEXT, char_count INTEGER DEFAULT 0,"
              "created_at DATETIME DEFAULT CURRENT_TIMESTAMP,preview TEXT);"
@@ -66,6 +67,18 @@ Store::Store(const fs::path& state,unsigned limit):media_(state/L"clips_media"),
     } catch(...) { sqlite3_close(db_); db_=nullptr; throw; }
 }
 Store::~Store() { if(db_) sqlite3_close(db_); }
+void Store::record_app_launch(std::wstring_view key) {
+    if(key.empty()) return;
+    Statement s(db_,"INSERT INTO app_usage VALUES(?,1,unixepoch()) ON CONFLICT(app_key) DO UPDATE SET launches=min(launches+1,1000000000),last_used=unixepoch()");
+    s.text(1,utf8(key)); s.done();
+}
+AppUsageMap Store::app_usage() {
+    Statement q(db_,"SELECT app_key,launches,last_used FROM app_usage");
+    AppUsageMap out; int rc;
+    while((rc=sqlite3_step(q.p))==SQLITE_ROW) out.emplace(wide(column(q.p,0)),AppUsage{sqlite3_column_int64(q.p,1),sqlite3_column_int64(q.p,2)});
+    if(rc!=SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
+    return out;
+}
 void Store::insert(const Item& item) {
     std::vector<fs::path> expired;
     exec("BEGIN IMMEDIATE");

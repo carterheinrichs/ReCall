@@ -105,7 +105,7 @@ void App::query() {
         else {
             std::shared_ptr<const std::vector<Item>> catalog;
             { std::lock_guard lock(result_mutex_); catalog=q.route==Route::Apps?apps_:emoji_; }
-            result.items=std::make_shared<const std::vector<Item>>(ranked(*catalog,q.text,100,[this,generation]{return generation!=generation_;}));
+            result.items=std::make_shared<const std::vector<Item>>(ranked(*catalog,q.text,100,[this,generation]{return generation!=generation_;},q.route==Route::Apps?store_->app_usage():AppUsageMap{}));
         }
         result.status=(q.route==Route::Apps?L"Applications":q.route==Route::Clipboard?L"Clipboard history":L"Unicode 16 emoji");
         result.status+=L"  ·  "+std::to_wstring(result.rows().size())+L" results";
@@ -216,6 +216,7 @@ void App::execute() {
         info.lpParameters=item.arguments.empty()?nullptr:item.arguments.c_str();
         info.lpDirectory=item.working_directory.empty()?nullptr:item.working_directory.c_str();
         if(!ShellExecuteExW(&info)) { report(L"Application launch failed ("+std::to_wstring(GetLastError())+L")."); return; }
+        enqueue([this,key=item.app_key]{store_->record_app_launch(key);},true);
         ShowWindow(hwnd_,SW_HIDE); return;
     }
     if(preparing_generation_==generation_) return;
