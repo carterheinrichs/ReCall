@@ -1,6 +1,7 @@
 # ReCall
 
-A resident Windows 11 quick-launcher written in C++20 and native Win32. Search applications, recall text and images from clipboard history, and insert Unicode 16 emoji from a single keyboard-driven palette.
+A Windows 11 quick-launcher written in C++20 and native Win32. Search applications, recall text and images from clipboard history, and insert Unicode 16 emoji from a single keyboard-driven palette.
+<img width="1175" height="742" alt="image" src="https://github.com/user-attachments/assets/e81a42f5-6932-4ff3-ac6f-6308b7f21b7f" />
 
 ## Build and run
 
