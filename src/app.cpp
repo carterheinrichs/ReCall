@@ -1,3 +1,4 @@
+#include <cmath>
 #include "app.h"
 #include "catalog.h"
 #include "clipboard.h"
@@ -89,6 +90,7 @@ void App::query() {
     int length=GetWindowTextLengthW(edit_); std::wstring input(static_cast<size_t>(length)+1,L'\0');
     GetWindowTextW(edit_,input.data(),length+1); input.resize(length);
     auto q=route_query(input,config_.clipboard_prefix,config_.emoji_prefix);
+    math_pointer_=-1; math_chart_={};
     auto generation=++generation_;
     preparing_generation_=0; ready_clipboard_.reset(); KillTimer(hwnd_,clipboard_timer);
     if(previews_) previews_->submit(generation,{});
@@ -101,6 +103,16 @@ void App::query() {
     enqueue([this,q=std::move(q),generation] {
         if(generation!=generation_) return;
         Snapshot result; result.generation=generation;
+        if(q.route==Route::Math || q.route==Route::Graph) {
+            result.math=std::make_shared<MathResult>(math_query(q.text,q.route==Route::Graph));
+            Item item; item.kind=Kind::Text; item.title=result.math->error.empty()?(result.math->value.empty()?L"Math":result.math->value):L"Check expression";
+            item.detail=result.math->error.empty()?result.math->info:result.math->error; item.value=result.math->value;
+            result.items=std::make_shared<const std::vector<Item>>(std::vector<Item>{item});
+            result.status=q.route==Route::Graph?L"Graph · radians · numerical estimates":L"Math · radians · Enter copies result";
+            if(generation!=generation_) return;
+            { std::lock_guard lock(result_mutex_); pending_=std::move(result); }
+            PostMessageW(hwnd_,results_message,0,0); return;
+        }
         // Clipboard stays in recency order; fuzzy matching only filters it.
         if(q.route==Route::Clipboard) result.items=std::make_shared<const std::vector<Item>>(store_->search(q.text,100,[this,generation]{return generation!=generation_;}));
         else {
@@ -243,13 +255,14 @@ void App::execute() {
         enqueue([this,key=item.app_key]{store_->record_app_launch(key);},true);
         ShowWindow(hwnd_,SW_HIDE); return;
     }
+    if(shown_.math && item.value.empty()) return;
     if(preparing_generation_==generation_) return;
     const auto generation=generation_.load(); preparing_generation_=generation;
     const auto target=last_active_;
     shown_.status=L"Preparing clipboard…"; InvalidateRect(hwnd_,nullptr,FALSE);
-    enqueue([this,item,generation,target] {
+    enqueue([this,item,generation,target,math=static_cast<bool>(shown_.math)] {
         if(generation!=generation_) return;
-        ClipboardReady ready; ready.generation=generation; ready.target=target;
+        ClipboardReady ready; ready.generation=generation; ready.target=target; ready.math=math;
         try {
             auto full=item.id?store_->load(item.id):std::optional<Item>(item);
             if(!full) throw std::runtime_error("This clipboard entry has expired");
@@ -280,7 +293,9 @@ void App::finish_clipboard() {
         report(wide(e.what())); ready_clipboard_.reset(); preparing_generation_=0; return;
     }
     const auto target=ready_clipboard_->target;
+    const bool math=ready_clipboard_->math;
     ready_clipboard_.reset(); preparing_generation_=0;
+    if(math) { shown_.status=L"Result copied"; InvalidateRect(hwnd_,nullptr,FALSE); return; }
     ShowWindow(hwnd_,SW_HIDE);
     if(IsWindow(target)) {
         if(SetForegroundWindow(target)&&config_.auto_paste) {
@@ -379,7 +394,35 @@ void App::paint() {
     if(shown_.rows().empty()) draw_text(L"No results",{px(28),px(110),split,px(150)},muted,font_);
     if(!shown_.rows().empty()&&selected_<static_cast<int>(shown_.rows().size())) {
         const auto& item=shown_.rows()[selected_]; RECT preview{split+px(24),px(100),bounds.right-px(24),bounds.bottom-px(85)};
-        if(item.kind==Kind::Image) image(item,preview);
+        if(shown_.math) {
+            const auto& m=*shown_.math;
+            if(!m.points.empty()) {
+                RECT chart=preview; chart.bottom=chart.top+(preview.bottom-preview.top)/2;
+                math_chart_=chart;
+                const double w=chart.right-chart.left,h=chart.bottom-chart.top;
+                auto sx=[&](double x){return static_cast<float>(chart.left+(x-m.xmin)/(m.xmax-m.xmin)*w);};
+                auto sy=[&](double y){return static_cast<float>(chart.bottom-(y-m.ymin)/(m.ymax-m.ymin)*h);};
+                Gdiplus::Pen axis(Gdiplus::Color(255,GetRValue(muted),GetGValue(muted),GetBValue(muted)),1);
+                Gdiplus::Pen curve(Gdiplus::Color(255,GetRValue(foreground),GetGValue(foreground),GetBValue(foreground)),2);
+                graphics.DrawRectangle(&axis,static_cast<int>(chart.left),static_cast<int>(chart.top),static_cast<int>(chart.right-chart.left),static_cast<int>(chart.bottom-chart.top));
+                if(m.xmin<=0&&m.xmax>=0)graphics.DrawLine(&axis,sx(0),static_cast<float>(chart.top),sx(0),static_cast<float>(chart.bottom));
+                if(m.ymin<=0&&m.ymax>=0)graphics.DrawLine(&axis,static_cast<float>(chart.left),sy(0),static_cast<float>(chart.right),sy(0));
+                for(size_t i=1;i<m.points.size();++i){auto a=m.points[i-1],b=m.points[i];
+                    if(std::isfinite(a.y)&&std::isfinite(b.y)&&std::abs(b.y-a.y)<(m.ymax-m.ymin)*.4)
+                        graphics.DrawLine(&curve,sx(a.x),sy(a.y),sx(b.x),sy(b.y));
+                }
+                if(math_pointer_>=0&&math_pointer_<static_cast<int>(m.points.size())) {
+                    auto point=m.points[math_pointer_];
+                    if(std::isfinite(point.y)) {
+                        graphics.DrawEllipse(&curve,sx(point.x)-3,sy(point.y)-3,6.0f,6.0f);
+                        draw_text(L"x="+math_number(point.x)+L"  y="+math_number(point.y),{chart.left,chart.top-px(22),chart.right,chart.top},foreground,small_font_);
+                    }
+                }
+                preview.top=chart.bottom+px(12);
+            }
+            draw_text(m.error.empty()?(m.value.empty()?m.info:m.value+L"\n\n"+m.info):m.error,preview,foreground,small_font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL);
+        }
+        else if(item.kind==Kind::Image) image(item,preview);
         else if(item.kind==Kind::Emoji) {
             RECT glyph{preview.left,preview.top,preview.right,preview.top+px(72)};
             if(!emoji_renderer_.draw(buffer,item.value,glyph,static_cast<float>(px(48)),foreground))
@@ -607,6 +650,14 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
         if(backdrop_) backdrop_->sync(hwnd_,dpi_,IsWindowVisible(hwnd_)!=FALSE);
         break;
     case WM_TIMER: if(wp==paste_timer) paste(); else if(wp==clipboard_timer) finish_clipboard(); else if(wp==caret_timer&&IsWindowVisible(hwnd_)&&GetFocus()==edit_) InvalidateRect(hwnd_,nullptr,FALSE); return 0;
+    case WM_MOUSEMOVE: {
+        POINT point{static_cast<short>(LOWORD(lp)),static_cast<short>(HIWORD(lp))};
+        int index=-1;
+        if(shown_.math&&!shown_.math->points.empty()&&PtInRect(&math_chart_,point)&&math_chart_.right>math_chart_.left)
+            index=static_cast<int>((point.x-math_chart_.left)*static_cast<double>(shown_.math->points.size()-1)/(math_chart_.right-math_chart_.left));
+        if(index!=math_pointer_) {math_pointer_=index;InvalidateRect(hwnd_,nullptr,FALSE);}
+        return 0;
+    }
     case WM_DPICHANGED: dpi_=HIWORD(wp); fonts(); position(); request_previews(); return 0;
     case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_SYSCOLORCHANGE: apply_theme(); return 0;
     case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wp),colors_.foreground); SetBkColor(reinterpret_cast<HDC>(wp),colors_.background); SetDCBrushColor(reinterpret_cast<HDC>(wp),colors_.background); return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
@@ -641,7 +692,7 @@ int App::run(HINSTANCE instance) {
     edit_=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,24,21,852,32,hwnd_,nullptr,instance,nullptr);
     if(!edit_) throw std::runtime_error("Cannot create query control");
     SendMessageW(edit_,EM_SETLIMITTEXT,256,0);
-    std::wstring cue=L"Search apps  ·  "+config_.clipboard_prefix+L" clipboard  ·  "+config_.emoji_prefix+L" emoji";
+    std::wstring cue=L"Search apps  ·  "+config_.clipboard_prefix+L" clipboard  ·  "+config_.emoji_prefix+L" emoji  ·  = math  ·  y= graph";
     SendMessageW(edit_,EM_SETCUEBANNER,TRUE,reinterpret_cast<LPARAM>(cue.c_str()));
     SetWindowSubclass(edit_,edit_proc,1,reinterpret_cast<DWORD_PTR>(this)); fonts(); apply_theme(); position();
     taskbar_created_=RegisterWindowMessageW(L"TaskbarCreated"); tray(true);

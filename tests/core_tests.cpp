@@ -110,5 +110,8 @@ int main() {
     Item recent=first; recent.app_key=L"recent";
     usage={{first.app_key,{1,1}},{recent.app_key,{1,1000000}}};
     check(ranked({first,recent},L"",100,{},usage,1000000)[0].app_key==L"recent","recency distinguishes equally frequent applications");
+    check(route_query(L"= 1 + 1",L">",L":").route==Route::Math,"equals routes math");
+    check(route_query(L"y=sin(x)",L">",L":").route==Route::Graph,"y equals routes graph");
+    check(route_query(L"year",L">",L":").route==Route::Apps,"ordinary app query stays apps");
     std::cout << (failures?"Core checks failed":"Core checks passed") << '\n'; return failures?1:0;
 }

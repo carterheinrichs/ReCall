@@ -55,6 +55,8 @@ int fuzzy_score(std::wstring_view query, std::wstring_view text,const Cancelled&
     return result==bad?-1:std::max(0,result);
 }
 Query route_query(std::wstring_view input,std::wstring_view clipboard,std::wstring_view emoji) {
+    if(input.starts_with(L"y=")) return {Route::Graph,std::wstring(input.substr(2))};
+    if(input.starts_with(L"=")) return {Route::Math,std::wstring(input.substr(1))};
     Route r=Route::Apps;
     if(input.starts_with(clipboard)) { r=Route::Clipboard; input.remove_prefix(clipboard.size()); }
     else if(input.starts_with(emoji)) { r=Route::Emoji; input.remove_prefix(emoji.size()); }

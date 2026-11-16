@@ -34,7 +34,7 @@ add_library(sqlite3 STATIC "${sqlite_SOURCE_DIR}/sqlite3.c")
 target_include_directories(sqlite3 PUBLIC "${sqlite_SOURCE_DIR}")
 target_compile_definitions(sqlite3 PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
 add_executable(ReCall WIN32 src/main.cpp src/config.cpp src/store.cpp src/clipboard.cpp
-  src/catalog.cpp src/search.cpp src/app.cpp src/emoji_renderer.cpp src/theme.cpp src/appearance.cpp src/glass.cpp src/backdrop.cpp src/previews.cpp assets/resources.rc
+  src/catalog.cpp src/search.cpp src/math.cpp src/app.cpp src/emoji_renderer.cpp src/theme.cpp src/appearance.cpp src/glass.cpp src/backdrop.cpp src/previews.cpp assets/resources.rc
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc")
 target_include_directories(ReCall PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(ReCall PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
@@ -47,6 +47,10 @@ if(MSVC)
 endif()
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(math_tests tests/math_tests.cpp src/math.cpp)
+  target_include_directories(math_tests PRIVATE src)
+  target_compile_options(math_tests PRIVATE /utf-8 /EHsc)
+  add_test(NAME math_tests COMMAND math_tests)
   add_executable(emoji_tests tests/emoji_tests.cpp src/emoji_renderer.cpp)
   target_include_directories(emoji_tests PRIVATE src)
   target_compile_definitions(emoji_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)

@@ -23,6 +23,8 @@ ReCall starts hidden with a notification-area icon. Press **Win+Space** or click
 | `code` | Fuzzy-search applications |
 | `> meeting` | Filter clipboard history, newest first |
 | `:` or `:smile` | Browse/search emoji names and category tags; `:fire` ranks 🔥 first |
+| `= 1 + 1` | Calculate; Enter copies the result and keeps it visible |
+| `y=sin(x)` | Graph with approximate intercepts and turning points |
 | Up / Down, Page Up / Page Down | Move selection |
 | Ctrl+Backspace | Delete the previous word or the selected text |
 | Enter | Launch or copy and paste the selection |
@@ -33,6 +35,14 @@ Click a result to select it; double-click to execute. Images have inline thumbna
 Application results learn from successful launches made through ReCall. A bounded frequency and recency boost favors commonly used apps, including when the search box is empty; unmatched apps are never included. Usage is stored locally in `recall.db` and survives restarts and index refreshes.
 
 Duplicate application entries are merged by normalized launch target, arguments, working directory, window mode, and elevation setting. ReCall keeps the original shortcut for launching and retains alternate names for searching. Shortcuts with distinct launch settings and unresolved/advertised shortcuts remain separate.
+
+## Math mode
+
+Start with `=` for standard math: `+ - * / ^`, parentheses, `sqrt`, `ln`, `log`, `exp`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, and `atan`. Functions use parentheses; multiplication requires `*`. Constants are `e` and `pi` (or `π`). Trig uses radians. `log(100)` is base 10; `log(8,2)` is log base 2 of 8. Powers associate right to left and precede unary minus: `-2^2` is -4. Results use 12 significant digits. Enter copies only, regardless of `auto_paste`, and leaves the result open.
+
+Use `y=x^2-4` for a graph. The default x range is [-10,10]; choose another with `y=x^2; -5; 5`. Graphs show sampled estimates of x-intercepts and turning points plus the y-intercept. These are numerical estimates, not a complete symbolic analysis; roots, stationary points, and discontinuities can be missed. Vertical scale follows sampled values. Move the pointer over the graph to inspect sampled coordinates. Symbolic antiderivatives are not included.
+
+Use `= integral(x^2,0,1)` for an approximate signed definite integral (area below the axis subtracts). Integration uses composite Simpson quadrature with 4,096 intervals and a 2,048-interval convergence check and requires a finite continuous integrand. Singularities and highly oscillatory functions may give unreliable estimates; this is not symbolic integration.
 
 ## Configuration and storage
 
