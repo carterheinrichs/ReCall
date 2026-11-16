@@ -38,7 +38,7 @@ Duplicate application entries are merged by normalized launch target, arguments,
 
 ## Math mode
 
-Start with `=` for standard math: `+ - * / ^`, parentheses, `sqrt`, `ln`, `log`, `exp`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, and `atan`. Functions use parentheses; multiplication requires `*`. Constants are `e` and `pi` (or `π`). Trig uses radians. `log(100)` is base 10; `log(8,2)` is log base 2 of 8. Powers associate right to left and precede unary minus: `-2^2` is -4. Results use 12 significant digits. Enter copies only, regardless of `auto_paste`, and leaves the result open.
+Start with `=` for standard math: `+ - * / ^`, parentheses, `sqrt`, `ln`, `log`, `exp`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, and `atan`. Functions use parentheses. Multiplication accepts `*` or juxtaposition, such as `2x`, `2pi`, `2sin(x)`, and `(x+1)(x-1)`. Implicit multiplication has the same left-to-right precedence as `*` and `/`; use parentheses to group a denominator, for example `1/(2x)`. Constants are `e` and `pi` (or `π`). Trig uses radians. `log(100)` is base 10; `log(8,2)` is log base 2 of 8. Powers associate right to left and precede unary minus: `-2^2` is -4. Results use 12 significant digits. Enter copies only, regardless of `auto_paste`, and leaves the result open.
 
 Use `y=x^2-4` for a graph. The default x range is [-10,10]; choose another with `y=x^2; -5; 5`. Graphs show sampled estimates of x-intercepts and turning points plus the y-intercept. These are numerical estimates, not a complete symbolic analysis; roots, stationary points, and discontinuities can be missed. Vertical scale follows sampled values. Move the pointer over the graph to inspect sampled coordinates. Symbolic antiderivatives are not included.
 

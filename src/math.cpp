@@ -51,7 +51,20 @@ class Parser {
     }
     double power(){double a=primary();if(take(L'^'))a=std::pow(a,unary());return a;}
     double unary(){if(take(L'+')){if(++depth>64)fail();auto v=unary();--depth;return v;}if(take(L'-')){if(++depth>64)fail();auto v=-unary();--depth;return v;}return power();}
-    double product(){double v=unary();for(;;){if(take(L'*'))v*=unary();else if(take(L'/'))v/=unary();else return v;}}
+    double product(){
+        double v=unary();
+        for(;;){
+            if(take(L'*'))v*=unary();
+            else if(take(L'/'))v/=unary();
+            else {
+                // Juxtaposed factors, e.g. 2x, 2pi, 2sin(x), or (x+1)(x-1).
+                // Keep the same left-to-right precedence as explicit * and /.
+                space();
+                if(p<s.size()&&(s[p]==L'('||iswalpha(s[p])))v*=unary();
+                else return v;
+            }
+        }
+    }
     double sum(){double v=product();for(;;){if(take(L'+'))v+=product();else if(take(L'-'))v-=product();else return v;}}
 public:
     Parser(std::wstring_view input,double variable):s(input),x(variable){}
