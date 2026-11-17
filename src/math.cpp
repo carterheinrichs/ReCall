@@ -8,8 +8,28 @@
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <limits>
 namespace recall {
 namespace {
+double real_power(double base,double exponent){
+    if(base>=0||!std::isfinite(exponent)||exponent==std::trunc(exponent))return std::pow(base,exponent);
+    // Recover small rational exponents using continued fractions. Odd roots
+    // of negative numbers are real; even roots and irrational powers are not.
+    double target=std::abs(exponent),remainder=target;
+    double p0=0,p1=1,q0=1,q1=0;
+    for(int i=0;i<32;++i){
+        double a=std::floor(remainder),p=a*p1+p0,q=a*q1+q0;
+        if(!std::isfinite(p)||q>1000000||p>9007199254740991.0)break;
+        if(q>0&&std::abs(p/q-target)<=std::numeric_limits<double>::epsilon()*target){
+            if(std::fmod(q,2)==0)break;
+            double magnitude=std::pow(-base,exponent);
+            return std::fmod(p,2)==0?magnitude:-magnitude;
+        }
+        double fraction=remainder-a;if(fraction==0)break;
+        p0=p1;p1=p;q0=q1;q1=q;remainder=1/fraction;
+    }
+    return std::pow(base,exponent);
+}
 class Parser {
     std::wstring_view s; size_t p=0; int depth=0; double x;
     void space(){while(p<s.size()&&iswspace(s[p]))++p;}
@@ -49,7 +69,7 @@ class Parser {
         }
         --depth;return v;
     }
-    double power(){double a=primary();if(take(L'^'))a=std::pow(a,unary());return a;}
+    double power(){double a=primary();if(take(L'^'))a=real_power(a,unary());return a;}
     double unary(){if(take(L'+')){if(++depth>64)fail();auto v=unary();--depth;return v;}if(take(L'-')){if(++depth>64)fail();auto v=-unary();--depth;return v;}return power();}
     double product(){
         double v=unary();
@@ -118,8 +138,11 @@ MathResult math_query(std::wstring_view input,bool graph){
         if(!std::isfinite(low))throw std::runtime_error("No finite values in this graph range");
         double span=high-low;if(!std::isfinite(span))throw std::runtime_error("Graph values exceed display range");if(span<1e-8)span=2;r.ymin=low-span*.1;r.ymax=high+span*.1;
         if(!std::isfinite(r.ymax-r.ymin)||!(r.ymax>r.ymin))throw std::runtime_error("Graph values exceed display range");
-        for(int i=1;i<=n;++i){auto a=r.points[i-1],b=r.points[i];if(!std::isfinite(a.y)||!std::isfinite(b.y))continue;
-            if(rootCount<6&&(a.y==0||(a.y<0)!=(b.y<0))){double l=a.x,h=b.x,fl=a.y;for(int j=0;j<40&&a.y!=0;++j){double mid=(l+h)/2,f=sample(mid);if(!std::isfinite(f))break;if((fl<0)==(f<0)){l=mid;fl=f;}else h=mid;}double root=a.y==0?a.x:(l+h)/2;if(std::abs(sample(root))<1e-6){roots+=math_number(root)+L"  ";++rootCount;}}
+        for(int i=0;i<=n;++i){auto b=r.points[i];
+            if(rootCount<6&&b.y==0){roots+=math_number(b.x)+L"  ";++rootCount;}
+            if(i==0)continue;
+            auto a=r.points[i-1];if(!std::isfinite(a.y)||!std::isfinite(b.y))continue;
+            if(rootCount<6&&a.y!=0&&b.y!=0&&(a.y<0)!=(b.y<0)){double l=a.x,h=b.x,fl=a.y;for(int j=0;j<40;++j){double mid=(l+h)/2,f=sample(mid);if(!std::isfinite(f))break;if(f==0){l=h=mid;break;}if((fl<0)==(f<0)){l=mid;fl=f;}else h=mid;}double root=(l+h)/2;if(std::abs(sample(root))<1e-6){roots+=math_number(root)+L"  ";++rootCount;}}
             if(i<n&&turnCount<6){auto c=r.points[i+1];if(std::isfinite(c.y)&&((b.y>a.y&&b.y>c.y)||(b.y<a.y&&b.y<c.y))){turns+=L"("+math_number(b.x)+L", "+math_number(b.y)+L")  ";++turnCount;}}
         }
         r.info=L"x: ["+math_number(r.xmin)+L", "+math_number(r.xmax)+L"]\ny: ["+math_number(r.ymin)+L", "+math_number(r.ymax)+L"]\nApprox. x-intercepts: "+(roots.empty()?L"none detected":roots)+L"\nApprox. turning points: "+(turns.empty()?L"none detected":turns);

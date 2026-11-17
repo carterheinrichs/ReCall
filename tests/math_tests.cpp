@@ -8,6 +8,19 @@ void near(double a,double b){check(std::abs(a-b)<1e-9);}
 int main(){try{
  near(calculate(L"1+1"),2);near(calculate(L"2+3*4"),14);
  near(calculate(L"-2^2"),-4);near(calculate(L"2^3^2"),512);near(calculate(L"2^-2"),.25);
+ near(calculate(L"(-8)^(1/3)"),-2);near(calculate(L"(-8)^(2/3)"),4);
+ near(calculate(L"(-8)^(-1/3)"),-.5);near(calculate(L"(-32)^(1/5)"),-2);
+ near(calculate(L"(-8)^(2/6)"),-2);near(calculate(L"(-8)^3"),-512);
+ for(auto expression:{L"(-8)^(1/2)",L"(-8)^(1/4)",L"(-8)^sqrt(2)",L"(-8)^pi",L"0^(-1/3)"})check(!math_query(expression).error.empty());
+ auto cubeGraph=math_query(L"(x^2-16)^(1/3)",true);
+ check(cubeGraph.error.empty());check(cubeGraph.points.size()==601);
+ for(auto point:cubeGraph.points){check(std::isfinite(point.y));near(point.y,std::cbrt(point.x*point.x-16));}
+ check(cubeGraph.ymin < -std::cbrt(16));
+ check(cubeGraph.info.find(L"x-intercepts: -4  4  \n")!=std::wstring::npos);
+ check(cubeGraph.info.find(L"turning points: (0, -2.51984209979)")!=std::wstring::npos);
+ check(cubeGraph.info.find(L"y-intercept: -2.51984209979")!=std::wstring::npos);
+ auto endpointRoots=math_query(L"x^2-16; -4; 4",true);
+ check(endpointRoots.info.find(L"x-intercepts: -4  4  \n")!=std::wstring::npos);
  near(calculate(L"(2+3)*4"),20);near(calculate(L"sqrt(9)+ln(e)+log(8,2)"),7);
  near(calculate(L"sin(pi/2)+cos(0)"),2);near(calculate(L"1e-3"),.001);
  near(calculate(L"exp(0)"),1);near(calculate(L"x^2",3),9);
