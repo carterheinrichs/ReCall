@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
+#include <numeric>
 namespace recall {
 namespace {
 double real_power(double base,double exponent){
@@ -98,7 +99,7 @@ std::vector<std::wstring_view> arguments(std::wstring_view s){
 }
 double calculate(std::wstring_view s,double x){return Parser(s,x).run();}
 std::wstring math_number(double v){if(v==0)v=0;std::wostringstream out;out.imbue(std::locale::classic());out<<std::setprecision(12)<<v;return out.str();}
-MathResult math_query(std::wstring_view input,bool graph){
+MathResult math_query(std::wstring_view input,bool graph,const MathViewport* viewport){
     MathResult r;
     try {
         while(!input.empty()&&iswspace(input.front()))input.remove_prefix(1);
@@ -127,27 +128,93 @@ MathResult math_query(std::wstring_view input,bool graph){
             }
             if(!std::isfinite(value))throw std::runtime_error("Undefined or non-finite result");r.value=math_number(value);if(r.info.empty())r.info=L"Enter copies this result. Trig uses radians.";return r;
         }
-        auto separator=input.find(L';');auto expression=input.substr(0,separator);
-        if(separator!=input.npos){auto range=input.substr(separator+1);auto second=range.find(L';');if(second==range.npos)throw std::runtime_error("Use y=expression; xmin; xmax");r.xmin=calculate(range.substr(0,second));r.xmax=calculate(range.substr(second+1));}
-        if(!(r.xmax>r.xmin)||!std::isfinite(r.xmax-r.xmin))throw std::runtime_error("Graph range must be finite with xmin < xmax");
-        // Validate syntax even if the selected range falls outside the domain.
+        std::vector<std::wstring_view> bounds;
+        size_t start=0;
+        for(size_t i=0;i<=input.size();++i)if(i==input.size()||input[i]==L';'){bounds.push_back(input.substr(start,i-start));start=i+1;}
+        auto expression=bounds[0];
+        if(bounds.size()!=1&&bounds.size()!=3&&bounds.size()!=5)throw std::runtime_error("Use y=expression; xmin; xmax[; ymin; ymax]");
+        if(bounds.size()>=3){r.xmin=calculate(bounds[1]);r.xmax=calculate(bounds[2]);}
+        bool fixedY=bounds.size()==5||viewport;
+        if(bounds.size()==5){r.ymin=calculate(bounds[3]);r.ymax=calculate(bounds[4]);}
+        if(viewport){r.xmin=viewport->xmin;r.xmax=viewport->xmax;r.ymin=viewport->ymin;r.ymax=viewport->ymax;}
+        auto valid=[](double lo,double hi){return std::isfinite(lo)&&std::isfinite(hi)&&hi>lo&&std::isfinite(hi-lo);};
+        if(!valid(r.xmin,r.xmax)||(fixedY&&!valid(r.ymin,r.ymax)))throw std::runtime_error("Graph bounds must be finite with min < max");
         auto sample=[&](double x){try{return calculate(expression,x);}catch(const std::exception& e){if(std::string(e.what())=="Undefined or non-finite result")return static_cast<double>(NAN);throw;}};
-        double low=INFINITY,high=-INFINITY;std::wstring roots,turns;int rootCount=0,turnCount=0;
         constexpr int n=600;
-        for(int i=0;i<=n;++i){double x=r.xmin+(r.xmax-r.xmin)*i/n,y=sample(x);r.points.push_back({x,y});if(std::isfinite(y)){low=std::min(low,y);high=std::max(high,y);}}
-        if(!std::isfinite(low))throw std::runtime_error("No finite values in this graph range");
-        double span=high-low;if(!std::isfinite(span))throw std::runtime_error("Graph values exceed display range");if(span<1e-8)span=2;r.ymin=low-span*.1;r.ymax=high+span*.1;
-        if(!std::isfinite(r.ymax-r.ymin)||!(r.ymax>r.ymin))throw std::runtime_error("Graph values exceed display range");
-        for(int i=0;i<=n;++i){auto b=r.points[i];
-            if(rootCount<6&&b.y==0){roots+=math_number(b.x)+L"  ";++rootCount;}
-            if(i==0)continue;
-            auto a=r.points[i-1];if(!std::isfinite(a.y)||!std::isfinite(b.y))continue;
-            if(rootCount<6&&a.y!=0&&b.y!=0&&(a.y<0)!=(b.y<0)){double l=a.x,h=b.x,fl=a.y;for(int j=0;j<40;++j){double mid=(l+h)/2,f=sample(mid);if(!std::isfinite(f))break;if(f==0){l=h=mid;break;}if((fl<0)==(f<0)){l=mid;fl=f;}else h=mid;}double root=(l+h)/2;if(std::abs(sample(root))<1e-6){roots+=math_number(root)+L"  ";++rootCount;}}
-            if(i<n&&turnCount<6){auto c=r.points[i+1];if(std::isfinite(c.y)&&((b.y>a.y&&b.y>c.y)||(b.y<a.y&&b.y<c.y))){turns+=L"("+math_number(b.x)+L", "+math_number(b.y)+L")  ";++turnCount;}}
+        std::vector<MathPoint> seed;std::vector<double> values;
+        for(int i=0;i<=n;++i){double x=std::lerp(r.xmin,r.xmax,static_cast<double>(i)/n),y=sample(x);seed.push_back({x,y});if(std::isfinite(y))values.push_back(y);}
+        if(values.empty()&&!fixedY)throw std::runtime_error("No finite values in this graph range");
+        if(!fixedY){
+            // Trim isolated spikes so poles do not flatten the initial view.
+            std::sort(values.begin(),values.end());size_t trim=values.size()>100?values.size()/100:0;
+            double low=values[trim],high=values[values.size()-1-trim],span=high-low;
+            if(!std::isfinite(span))throw std::runtime_error("Graph values exceed display range");
+            if(span<1e-8)span=2;r.ymin=low-span*.1;r.ymax=high+span*.1;
         }
+        if(!valid(r.ymin,r.ymax))throw std::runtime_error("Graph values exceed display range");
+        const double yspan=r.ymax-r.ymin;
+        // Refine screen-space midpoint error. NaN vertices separate branches.
+        size_t evaluations=0;
+        auto screenY=[&](double y){return std::clamp((y-r.ymin)/yspan,-2.0,3.0)*320;};
+        std::function<void(MathPoint,MathPoint,int)> refine;
+        refine=[&](MathPoint a,MathPoint b,int depth){
+            double mx=std::midpoint(a.x,b.x);
+            if(mx==a.x||mx==b.x){r.points.push_back(b);return;}
+            MathPoint m{mx,sample(mx)};++evaluations;
+            bool fa=std::isfinite(a.y),fb=std::isfinite(b.y),fm=std::isfinite(m.y);
+            bool mixed=(fa!=fb)||(fa!=fm);
+            double error=fa&&fb&&fm?std::abs(screenY(m.y)-(screenY(a.y)+screenY(b.y))*.5):0;
+            double scale=std::max({1.0,std::abs(a.y),std::abs(b.y),std::abs(m.y)});
+            double relative=fa&&fb&&fm?std::abs(m.y/scale-(a.y/scale+b.y/scale)*.5):0;
+            // Keep probing offscreen curvature too: both sides of an even
+            // order pole can lie above the viewport and have the same sign.
+            bool split=mixed||error>.4||relative>.1;
+            if(split&&depth<18&&evaluations<24000){refine(a,m,depth+1);refine(m,b,depth+1);}
+            else{if(split&&(mixed||error>2||relative>.1))r.points.push_back({mx,NAN});r.points.push_back(b);}
+        };
+        r.points.push_back(seed.front());for(int i=1;i<=n;++i)refine(seed[i-1],seed[i],0);
+        auto add=[](std::vector<MathPoint>& list,MathPoint point,double tolerance){for(auto other:list)if(std::abs(other.x-point.x)<=tolerance)return;list.push_back(point);};
+        const double xtol=(r.xmax-r.xmin)*1e-8;
+        // Refined extrema also reveal roots that touch the axis without crossing.
+        for(int i=1;i<n;++i){
+            auto a=seed[i-1],b=seed[i],c=seed[i+1];
+            if(!std::isfinite(a.y)||!std::isfinite(b.y)||!std::isfinite(c.y))continue;
+            bool minimum=b.y<=a.y&&b.y<=c.y&&(b.y<a.y||b.y<c.y);
+            bool maximum=b.y>=a.y&&b.y>=c.y&&(b.y>a.y||b.y>c.y);
+            if(!minimum&&!maximum)continue;
+            double l=a.x,h=c.x;
+            for(int j=0;j<72;++j){
+                double u=std::lerp(l,h,.3819660112501051),v=std::lerp(l,h,.6180339887498949);
+                double fu=sample(u),fv=sample(v);if(!std::isfinite(fu)||!std::isfinite(fv))break;
+                if(minimum?fu<fv:fu>fv)h=v;else l=u;
+            }
+            double x=std::midpoint(l,h),y=sample(x);if(!std::isfinite(y))continue;
+            if(b.y==y)x=b.x; // Prefer an exact sampled peak to a rounded plateau edge.
+            // A pole fails this local convergence check; a finite cusp may
+            // still be a valid extremum even when its derivative is undefined.
+            double delta=(c.x-a.x)*1e-4,yl=sample(x-delta),yr=sample(x+delta);
+            double tolerance=1e-3*(1+std::abs(y)+std::max(std::abs(a.y-y),std::abs(c.y-y)));
+            if(!std::isfinite(yl)||!std::isfinite(yr)||std::abs(yl-y)>tolerance||std::abs(yr-y)>tolerance)continue;
+            add(r.turns,{x,y},xtol);
+            if(std::abs(y)<1e-10)add(r.roots,{x,0},xtol);
+        }
+        for(size_t i=0;i<r.points.size();++i){
+            auto b=r.points[i];if(b.y==0&&(i==0||r.points[i-1].y!=0))add(r.roots,b,xtol);
+            if(i==0)continue;auto a=r.points[i-1];
+            if(!std::isfinite(a.y)||!std::isfinite(b.y)||a.y==0||b.y==0||(a.y<0)==(b.y<0))continue;
+            double l=a.x,h=b.x,fl=a.y;bool finite=true;
+            for(int j=0;j<64;++j){double mid=std::midpoint(l,h),f=sample(mid);if(!std::isfinite(f)){finite=false;break;}if(f==0){l=h=mid;break;}if((fl<0)==(f<0)){l=mid;fl=f;}else h=mid;}
+            double root=std::midpoint(l,h),y=sample(root);
+            if(finite&&std::isfinite(y)&&std::abs(y)<1e-8)add(r.roots,{root,0},xtol);
+        }
+        auto order=[](MathPoint a,MathPoint b){return a.x<b.x;};
+        std::sort(r.roots.begin(),r.roots.end(),order);std::sort(r.turns.begin(),r.turns.end(),order);
+        std::wstring roots,turns;
+        for(size_t i=0;i<std::min(size_t(6),r.roots.size());++i)roots+=math_number(r.roots[i].x)+L"  ";
+        for(size_t i=0;i<std::min(size_t(6),r.turns.size());++i)turns+=L"("+math_number(r.turns[i].x)+L", "+math_number(r.turns[i].y)+L")  ";
         r.info=L"x: ["+math_number(r.xmin)+L", "+math_number(r.xmax)+L"]\ny: ["+math_number(r.ymin)+L", "+math_number(r.ymax)+L"]\nApprox. x-intercepts: "+(roots.empty()?L"none detected":roots)+L"\nApprox. turning points: "+(turns.empty()?L"none detected":turns);
         double intercept=sample(0);if(std::isfinite(intercept))r.info+=L"\ny-intercept: "+math_number(intercept);
-        r.info+=L"\nSampled estimates; may miss roots, extrema, or discontinuities.\nArea: = integral(expression,a,b)";
+        r.info+=L"\nNumerical estimates; narrow features or discontinuities may be missed.\nArea: = integral(expression,a,b)";
     }catch(const std::exception& e){r.points.clear();r.value.clear();r.error=std::wstring(e.what(),e.what()+std::char_traits<char>::length(e.what()));}
     return r;
 }

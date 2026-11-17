@@ -47,6 +47,10 @@ class App {
     int dpi_=96, selected_=0, first_=0;
     RECT math_chart_{};
     int math_pointer_=-1;
+    std::optional<MathViewport> math_view_;
+    bool math_dragging_=false;
+    POINT math_drag_origin_{};
+    MathViewport math_drag_view_;
     std::shared_ptr<const std::vector<Item>> apps_=std::make_shared<const std::vector<Item>>(),emoji_=apps_;
     std::unique_ptr<PreviewLoader> previews_,icons_;
     std::set<std::wstring> requested_previews_;
@@ -78,7 +82,7 @@ class App {
     void enqueue(std::function<void()> job,bool priority=false);
     void run_worker();
     void run_indexer(std::stop_token stop);
-    void query();
+    void query(std::optional<MathViewport> viewport=std::nullopt);
     void show_results(Snapshot result);
     void request_previews();
     void refresh_history();

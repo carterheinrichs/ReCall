@@ -86,11 +86,13 @@ void App::refresh_history() {
     { std::lock_guard lock(result_mutex_); pending_history_=std::move(history); }
     PostMessageW(hwnd_,history_message,0,0);
 }
-void App::query() {
+void App::query(std::optional<MathViewport> viewport) {
     int length=GetWindowTextLengthW(edit_); std::wstring input(static_cast<size_t>(length)+1,L'\0');
     GetWindowTextW(edit_,input.data(),length+1); input.resize(length);
     auto q=route_query(input,config_.clipboard_prefix,config_.emoji_prefix);
-    math_pointer_=-1; math_chart_={};
+    math_pointer_=-1;
+    math_view_=viewport;
+    if(!viewport){math_chart_={};math_dragging_=false;if(GetCapture()==hwnd_)ReleaseCapture();}
     auto generation=++generation_;
     preparing_generation_=0; ready_clipboard_.reset(); KillTimer(hwnd_,clipboard_timer);
     if(previews_) previews_->submit(generation,{});
@@ -100,11 +102,11 @@ void App::query() {
         result.status=L"Clipboard history  ·  "+std::to_wstring(result.rows().size())+L" results";
         show_results(std::move(result)); return;
     }
-    enqueue([this,q=std::move(q),generation] {
+    enqueue([this,q=std::move(q),generation,viewport] {
         if(generation!=generation_) return;
         Snapshot result; result.generation=generation;
         if(q.route==Route::Math || q.route==Route::Graph) {
-            result.math=std::make_shared<MathResult>(math_query(q.text,q.route==Route::Graph));
+            result.math=std::make_shared<MathResult>(math_query(q.text,q.route==Route::Graph,viewport?&*viewport:nullptr));
             Item item; item.kind=Kind::Text; item.title=result.math->error.empty()?(result.math->value.empty()?L"Math":result.math->value):L"Check expression";
             item.detail=result.math->error.empty()?result.math->info:result.math->error; item.value=result.math->value;
             result.items=std::make_shared<const std::vector<Item>>(std::vector<Item>{item});
@@ -397,28 +399,55 @@ void App::paint() {
         if(shown_.math) {
             const auto& m=*shown_.math;
             if(!m.points.empty()) {
-                RECT chart=preview; chart.bottom=chart.top+(preview.bottom-preview.top)/2;
+                RECT chart=preview; chart.left+=px(48);chart.right-=px(8);
+                chart.bottom=chart.top+(preview.bottom-preview.top)/2;chart.top+=px(10);chart.bottom-=px(24);
                 math_chart_=chart;
                 const double w=chart.right-chart.left,h=chart.bottom-chart.top;
-                auto sx=[&](double x){return static_cast<float>(chart.left+(x-m.xmin)/(m.xmax-m.xmin)*w);};
-                auto sy=[&](double y){return static_cast<float>(chart.bottom-(y-m.ymin)/(m.ymax-m.ymin)*h);};
+                auto sx=[&](double x){return static_cast<float>(chart.left+std::clamp((x-m.xmin)/(m.xmax-m.xmin),-10000.0,10000.0)*w);};
+                auto sy=[&](double y){return static_cast<float>(chart.bottom-std::clamp((y-m.ymin)/(m.ymax-m.ymin),-10000.0,10000.0)*h);};
                 Gdiplus::Pen axis(Gdiplus::Color(255,GetRValue(muted),GetGValue(muted),GetBValue(muted)),1);
+                Gdiplus::Pen grid(Gdiplus::Color(65,GetRValue(muted),GetGValue(muted),GetBValue(muted)),1);
                 Gdiplus::Pen curve(Gdiplus::Color(255,GetRValue(foreground),GetGValue(foreground),GetBValue(foreground)),2);
+                auto ticks=[&](double lo,double hi,bool horizontal){
+                    double raw=(hi-lo)/(horizontal?5:4),power=std::pow(10.0,std::floor(std::log10(raw)));
+                    double unit=raw/power,step=(unit<=1?1:unit<=2?2:unit<=5?5:10)*power;
+                    if(!std::isfinite(step)||step<=0)return;
+                    double first=std::ceil(lo/step)*step;
+                    for(int i=0;i<20;++i){double value=first+i*step;if(value>hi)break;
+                        if(std::abs(value)<step*1e-10)value=0;
+                        int position=static_cast<int>(horizontal?sx(value):sy(value));
+                        if(horizontal){
+                            graphics.DrawLine(&grid,static_cast<float>(position),static_cast<float>(chart.top),static_cast<float>(position),static_cast<float>(chart.bottom));
+                            draw_text(math_number(value),{position-px(30),chart.bottom+px(3),position+px(30),chart.bottom+px(22)},muted,small_font_,DT_CENTER|DT_SINGLELINE);
+                        }else{
+                            graphics.DrawLine(&grid,static_cast<float>(chart.left),static_cast<float>(position),static_cast<float>(chart.right),static_cast<float>(position));
+                            draw_text(math_number(value),{preview.left,position-px(9),chart.left-px(5),position+px(10)},muted,small_font_,DT_RIGHT|DT_SINGLELINE);
+                        }
+                    }
+                };
+                ticks(m.xmin,m.xmax,true);ticks(m.ymin,m.ymax,false);
                 graphics.DrawRectangle(&axis,static_cast<int>(chart.left),static_cast<int>(chart.top),static_cast<int>(chart.right-chart.left),static_cast<int>(chart.bottom-chart.top));
                 if(m.xmin<=0&&m.xmax>=0)graphics.DrawLine(&axis,sx(0),static_cast<float>(chart.top),sx(0),static_cast<float>(chart.bottom));
                 if(m.ymin<=0&&m.ymax>=0)graphics.DrawLine(&axis,static_cast<float>(chart.left),sy(0),static_cast<float>(chart.right),sy(0));
+                auto state=graphics.Save();
+                graphics.SetClip(Gdiplus::Rect(chart.left,chart.top,chart.right-chart.left,chart.bottom-chart.top));
                 for(size_t i=1;i<m.points.size();++i){auto a=m.points[i-1],b=m.points[i];
-                    if(std::isfinite(a.y)&&std::isfinite(b.y)&&std::abs(b.y-a.y)<(m.ymax-m.ymin)*.4)
-                        graphics.DrawLine(&curve,sx(a.x),sy(a.y),sx(b.x),sy(b.y));
+                    if(std::isfinite(a.y)&&std::isfinite(b.y))graphics.DrawLine(&curve,sx(a.x),sy(a.y),sx(b.x),sy(b.y));
                 }
+                for(const auto& root:m.roots)if(root.x>=m.xmin&&root.x<=m.xmax&&m.ymin<=0&&m.ymax>=0)
+                    graphics.DrawEllipse(&curve,sx(root.x)-3,sy(0)-3,6.0f,6.0f);
                 if(math_pointer_>=0&&math_pointer_<static_cast<int>(m.points.size())) {
                     auto point=m.points[math_pointer_];
-                    if(std::isfinite(point.y)) {
-                        graphics.DrawEllipse(&curve,sx(point.x)-3,sy(point.y)-3,6.0f,6.0f);
-                        draw_text(L"x="+math_number(point.x)+L"  y="+math_number(point.y),{chart.left,chart.top-px(22),chart.right,chart.top},foreground,small_font_);
-                    }
+                    if(std::isfinite(point.y))graphics.DrawEllipse(&curve,sx(point.x)-3,sy(point.y)-3,6.0f,6.0f);
                 }
-                preview.top=chart.bottom+px(12);
+                graphics.Restore(state);
+                if(math_pointer_>=0&&math_pointer_<static_cast<int>(m.points.size())) {
+                    auto point=m.points[math_pointer_];
+                    if(std::isfinite(point.y))draw_text(L"x="+math_number(point.x)+L"  y="+math_number(point.y),{preview.left,chart.top-px(26),chart.right,chart.top-px(7)},foreground,small_font_);
+                }
+                preview.top=chart.bottom+px(30);
+                draw_text(L"Drag to pan · Wheel to zoom · Double-click to reset",{preview.left,preview.top,preview.right,preview.top+px(30)},muted,small_font_,DT_LEFT|DT_WORDBREAK);
+                preview.top+=px(38);
             }
             draw_text(m.error.empty()?(m.value.empty()?m.info:m.value+L"\n\n"+m.info):m.error,preview,foreground,small_font_,DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL);
         }
@@ -652,20 +681,52 @@ LRESULT App::message(UINT msg,WPARAM wp,LPARAM lp) {
     case WM_TIMER: if(wp==paste_timer) paste(); else if(wp==clipboard_timer) finish_clipboard(); else if(wp==caret_timer&&IsWindowVisible(hwnd_)&&GetFocus()==edit_) InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_MOUSEMOVE: {
         POINT point{static_cast<short>(LOWORD(lp)),static_cast<short>(HIWORD(lp))};
+        if(math_dragging_&&GetCapture()==hwnd_&&math_chart_.right>math_chart_.left&&math_chart_.bottom>math_chart_.top){
+            auto view=math_drag_view_;
+            double dx=(point.x-math_drag_origin_.x)*(view.xmax-view.xmin)/(math_chart_.right-math_chart_.left);
+            double dy=(point.y-math_drag_origin_.y)*(view.ymax-view.ymin)/(math_chart_.bottom-math_chart_.top);
+            view.xmin-=dx;view.xmax-=dx;view.ymin+=dy;view.ymax+=dy;
+            if(std::isfinite(view.xmin)&&std::isfinite(view.xmax)&&std::isfinite(view.ymin)&&std::isfinite(view.ymax)&&view.xmax>view.xmin&&view.ymax>view.ymin)query(view);
+            return 0;
+        }
         int index=-1;
-        if(shown_.math&&!shown_.math->points.empty()&&PtInRect(&math_chart_,point)&&math_chart_.right>math_chart_.left)
-            index=static_cast<int>((point.x-math_chart_.left)*static_cast<double>(shown_.math->points.size()-1)/(math_chart_.right-math_chart_.left));
+        if(shown_.math&&!shown_.math->points.empty()&&PtInRect(&math_chart_,point)&&math_chart_.right>math_chart_.left){
+            const auto& m=*shown_.math;
+            double x=std::lerp(m.xmin,m.xmax,static_cast<double>(point.x-math_chart_.left)/(math_chart_.right-math_chart_.left));
+            auto it=std::lower_bound(m.points.begin(),m.points.end(),x,[](MathPoint p,double value){return p.x<value;});
+            if(it!=m.points.end()){index=static_cast<int>(it-m.points.begin());if(index>0&&x-m.points[index-1].x<it->x-x)--index;}
+        }
         if(index!=math_pointer_) {math_pointer_=index;InvalidateRect(hwnd_,nullptr,FALSE);}
         return 0;
     }
+    case WM_LBUTTONUP: if(math_dragging_){math_dragging_=false;ReleaseCapture();}return 0;
+    case WM_CAPTURECHANGED: math_dragging_=false;return 0;
     case WM_DPICHANGED: dpi_=HIWORD(wp); fonts(); position(); request_previews(); return 0;
     case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_SYSCOLORCHANGE: apply_theme(); return 0;
     case WM_CTLCOLOREDIT: SetTextColor(reinterpret_cast<HDC>(wp),colors_.foreground); SetBkColor(reinterpret_cast<HDC>(wp),colors_.background); SetDCBrushColor(reinterpret_cast<HDC>(wp),colors_.background); return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: paint(); return 0;
-    case WM_MOUSEWHEEL: select(GET_WHEEL_DELTA_WPARAM(wp)>0?-1:1); return 0;
+    case WM_MOUSEWHEEL: {
+        POINT point{static_cast<short>(LOWORD(lp)),static_cast<short>(HIWORD(lp))};ScreenToClient(hwnd_,&point);
+        if(shown_.math&&!shown_.math->points.empty()&&PtInRect(&math_chart_,point)&&math_chart_.right>math_chart_.left&&math_chart_.bottom>math_chart_.top){
+            const auto& m=*shown_.math;auto view=math_view_.value_or(MathViewport{m.xmin,m.xmax,m.ymin,m.ymax});
+            double x=std::lerp(view.xmin,view.xmax,static_cast<double>(point.x-math_chart_.left)/(math_chart_.right-math_chart_.left));
+            double y=std::lerp(view.ymax,view.ymin,static_cast<double>(point.y-math_chart_.top)/(math_chart_.bottom-math_chart_.top));
+            double factor=std::pow(1.2,-GET_WHEEL_DELTA_WPARAM(wp)/120.0);
+            view={x+(view.xmin-x)*factor,x+(view.xmax-x)*factor,y+(view.ymin-y)*factor,y+(view.ymax-y)*factor};
+            double xs=view.xmax-view.xmin,ys=view.ymax-view.ymin;
+            if(std::isfinite(xs)&&std::isfinite(ys)&&xs>1e-10&&ys>1e-10&&xs<1e100&&ys<1e100)query(view);
+        }else select(GET_WHEEL_DELTA_WPARAM(wp)>0?-1:1);
+        return 0;
+    }
     case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: {
         int x=static_cast<short>(LOWORD(lp)),y=static_cast<short>(HIWORD(lp)); RECT r{}; GetClientRect(hwnd_,&r);
+        POINT point{x,y};
+        if(shown_.math&&!shown_.math->points.empty()&&PtInRect(&math_chart_,point)){
+            if(msg==WM_LBUTTONDBLCLK){query();return 0;}
+            const auto& m=*shown_.math;math_drag_view_=math_view_.value_or(MathViewport{m.xmin,m.xmax,m.ymin,m.ymax});
+            math_drag_origin_=point;math_dragging_=true;SetCapture(hwnd_);return 0;
+        }
         if(x<r.right*3/5&&y>=px(82)&&y<r.bottom-px(40)) {
             int index=first_+(y-px(82))/px(58);
             if(index<static_cast<int>(shown_.rows().size())) { selected_=index; request_previews(); InvalidateRect(hwnd_,nullptr,FALSE); if(msg==WM_LBUTTONDBLCLK) execute(); }
