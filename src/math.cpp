@@ -12,6 +12,15 @@
 #include <numeric>
 namespace recall {
 namespace {
+double finite_result(double v){
+    if(!std::isfinite(v))throw std::runtime_error("Undefined or non-finite result");
+    return v;
+}
+double modulo(double a,double b){
+    double divisor=std::abs(b),r=finite_result(std::fmod(a,divisor));
+    if(r<0)r+=divisor;
+    return r==divisor||r==0?0:r;
+}
 double real_power(double base,double exponent){
     if(base>=0||!std::isfinite(exponent)||exponent==std::trunc(exponent))return std::pow(base,exponent);
     // Recover small rational exponents using continued fractions. Odd roots
@@ -32,7 +41,7 @@ double real_power(double base,double exponent){
     return std::pow(base,exponent);
 }
 class Parser {
-    std::wstring_view s; size_t p=0; int depth=0; double x;
+    std::wstring_view s; size_t p=0; int depth=0; double x; bool allow_variable;
     void space(){while(p<s.size()&&iswspace(s[p]))++p;}
     bool take(wchar_t c){space();if(p<s.size()&&s[p]==c){++p;return true;}return false;}
     [[noreturn]] void fail(){throw std::runtime_error("Invalid expression or function arguments");}
@@ -55,10 +64,11 @@ class Parser {
             auto name=std::wstring(s.substr(start,p-start));for(auto& c:name)c=towlower(c);
             if(name==L"pi"||name==L"π")v=std::numbers::pi;
             else if(name==L"e")v=std::numbers::e;
-            else if(name==L"x")v=x;
+            else if(name==L"x"){if(!allow_variable)throw std::runtime_error("x is only allowed in graph or integral expressions");v=x;}
             else {
                 if(!take(L'('))fail();double a=sum();bool two=take(L',');double b=two?sum():0;if(!take(L')'))fail();
-                if(name==L"log")v=two?std::log(a)/std::log(b):std::log10(a);
+                if(name==L"mod"){if(!two)fail();v=modulo(a,b);}
+                else if(name==L"log")v=two?std::log(a)/std::log(b):std::log10(a);
                 else {if(two)fail();
                     if(name==L"sqrt")v=std::sqrt(a);else if(name==L"ln")v=std::log(a);
                     else if(name==L"sin")v=std::sin(a);else if(name==L"cos")v=std::cos(a);else if(name==L"tan")v=std::tan(a);
@@ -68,15 +78,16 @@ class Parser {
                 if(name==L"log"&&two&&(b<=0||b==1))fail();
             }
         }
-        --depth;return v;
+        --depth;return finite_result(v);
     }
-    double power(){double a=primary();if(take(L'^'))a=real_power(a,unary());return a;}
+    double power(){double a=primary();if(take(L'^'))a=real_power(a,unary());return finite_result(a);}
     double unary(){if(take(L'+')){if(++depth>64)fail();auto v=unary();--depth;return v;}if(take(L'-')){if(++depth>64)fail();auto v=-unary();--depth;return v;}return power();}
     double product(){
         double v=unary();
         for(;;){
             if(take(L'*'))v*=unary();
             else if(take(L'/'))v/=unary();
+            else if(take(L'%'))v=modulo(v,unary());
             else {
                 // Juxtaposed factors, e.g. 2x, 2pi, 2sin(x), or (x+1)(x-1).
                 // Keep the same left-to-right precedence as explicit * and /.
@@ -84,11 +95,12 @@ class Parser {
                 if(p<s.size()&&(s[p]==L'('||iswalpha(s[p])))v*=unary();
                 else return v;
             }
+            v=finite_result(v);
         }
     }
-    double sum(){double v=product();for(;;){if(take(L'+'))v+=product();else if(take(L'-'))v-=product();else return v;}}
+    double sum(){double v=product();for(;;){if(take(L'+'))v=finite_result(v+product());else if(take(L'-'))v=finite_result(v-product());else return v;}}
 public:
-    Parser(std::wstring_view input,double variable):s(input),x(variable){}
+    Parser(std::wstring_view input,double variable,bool allowVariable=true):s(input),x(variable),allow_variable(allowVariable){}
     double run(){if(s.size()>256)fail();double v=sum();space();if(p!=s.size())fail();if(!std::isfinite(v))throw std::runtime_error("Undefined or non-finite result");return v;}
 };
 std::vector<std::wstring_view> arguments(std::wstring_view s){
@@ -109,8 +121,10 @@ MathResult math_query(std::wstring_view input,bool graph,const MathViewport* vie
             double value;
             if(input.starts_with(L"integral(")&&input.back()==L')'){
                 auto args=arguments(input.substr(9,input.size()-10));if(args.size()!=3)throw std::runtime_error("Use integral(expression,lower,upper)");
-                double a=calculate(args[1]),b=calculate(args[2]);if(a==b)value=0;else{
-                    constexpr int n=4096;double h=(b-a)/n,total=calculate(args[0],a)+calculate(args[0],b);
+                double a=Parser(args[1],0,false).run(),b=Parser(args[2],0,false).run();
+                double first=calculate(args[0],a);
+                if(a==b)value=0;else{
+                    constexpr int n=4096;double h=(b-a)/n,total=first+calculate(args[0],b);
                     double coarse=total;
                     for(int i=1;i<n;++i){double y=calculate(args[0],a+h*i);total+=(i%2?4:2)*y;if(i%2==0)coarse+=(i%4?4:2)*y;}
                     value=total*h/3;coarse*=2*h/3;
@@ -118,14 +132,7 @@ MathResult math_query(std::wstring_view input,bool graph,const MathViewport* vie
                         throw std::runtime_error("Integral did not converge; choose a smoother integrand or smaller interval");
                 }
                 r.info=L"Numerical definite integral (Simpson approximation). Requires a continuous, finite integrand; check convergence near singularities.";
-            }else{ // x is reserved for graph/integral expressions.
-                for(size_t i=0;i<input.size();) {
-                    if(iswalpha(input[i])) { auto start=i;while(i<input.size()&&iswalpha(input[i]))++i;auto name=input.substr(start,i-start);
-                        if(name==L"x"||name==L"X")throw std::runtime_error("Use y= for expressions containing x");
-                    }else ++i;
-                }
-                value=calculate(input);
-            }
+            }else value=Parser(input,0,false).run();
             if(!std::isfinite(value))throw std::runtime_error("Undefined or non-finite result");r.value=math_number(value);if(r.info.empty())r.info=L"Enter copies this result. Trig uses radians.";return r;
         }
         std::vector<std::wstring_view> bounds;

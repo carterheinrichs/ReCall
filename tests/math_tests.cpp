@@ -9,6 +9,25 @@ void check(bool ok,std::source_location location=std::source_location::current()
 }
 void near(double a,double b,std::source_location location=std::source_location::current()){check(std::abs(a-b)<1e-9,location);}
 int main(){try{
+ near(calculate(L"7%3"),1);near(calculate(L"-7%3"),2);
+ near(calculate(L"7%-3"),1);near(calculate(L"-7%-3"),2);
+ near(calculate(L"mod(-7,3)"),2);near(calculate(L"MOD(7,-3)"),1);
+ near(calculate(L"5.5%2"),1.5);near(calculate(L"-6%3"),0);
+ near(calculate(L"2+7%3*4"),6);near(calculate(L"20/2%3"),1);
+ near(calculate(L"2^3%3"),2);near(calculate(L"7%3%2"),1);
+ near(calculate(L"2mod(7,3)"),2);
+ for(auto expression:{L"7%0",L"mod(7,0)",L"mod(1)",L"mod(1,2,3)",
+     L"1/(1/0)",L"sqrt(-1)^0",L"exp(1000)^0",L"(1e308*1e308)^0",L"(1e308+1e308)^0"})
+     check(!math_query(expression).error.empty());
+ for(auto expression:{L"integral(x,0,x)",L"integral(x,X,1)",L"integral(x,0,exp(x))",
+     L"integral(bogus(x),1,1)",L"integral(x+,1,1)",L"integral(1/x,0,0)"})
+     check(!math_query(expression).error.empty());
+ near(std::stod(math_query(L"integral(x^2,1,1)").value),0);
+ near(std::stod(math_query(L"integral(mod(x,3),0,1)").value),.5);
+ auto moduloGraph=math_query(L"x%3",true);check(moduloGraph.error.empty());
+ for(auto point:moduloGraph.points)if(std::isfinite(point.y))check(point.y>=0&&point.y<3);
+ auto maskedDomain=math_query(L"sqrt(x)^0",true);check(maskedDomain.error.empty());
+ for(auto point:maskedDomain.points)if(point.x<0)check(!std::isfinite(point.y));
  near(calculate(L"1+1"),2);near(calculate(L"2+3*4"),14);
  near(calculate(L"-2^2"),-4);near(calculate(L"2^3^2"),512);near(calculate(L"2^-2"),.25);
  near(calculate(L"(-8)^(1/3)"),-2);near(calculate(L"(-8)^(2/3)"),4);
