@@ -6,7 +6,7 @@ namespace recall {
 using Cancelled = std::function<bool()>;
 bool fuzzy_matches(std::wstring_view query,std::wstring_view candidate,const Cancelled& cancelled={});
 int fuzzy_score(std::wstring_view query, std::wstring_view candidate,const Cancelled& cancelled={});
-enum class Route { Apps, Clipboard, Emoji };
+enum class Route { Apps, Clipboard, Emoji, Math, Graph };
 struct Query { Route route; std::wstring text; };
 Query route_query(std::wstring_view input, std::wstring_view clipboard, std::wstring_view emoji);
 struct AppUsage { long long launches{}, last_used{}; };
